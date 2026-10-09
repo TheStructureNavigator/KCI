@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from time import perf_counter
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -190,7 +189,6 @@ def invoke_op001_model_boundary(
     inference_parameters: dict[str, Any] | None = None,
 ) -> Op001CandidateConversionResult:
     started_at = datetime.now(timezone.utc)
-    started = perf_counter()
     parameters = dict(inference_parameters or {})
     try:
         raw_response = provider.generate(
@@ -206,9 +204,9 @@ def invoke_op001_model_boundary(
             intelligence_run_id,
             "failed",
             started_at,
-            started,
             parameters,
             str(exc),
+            failure=exc,
         )
         raise Op001ModelInvocationError(str(exc)) from exc
 
@@ -216,26 +214,12 @@ def invoke_op001_model_boundary(
         response = parse_op001_model_response(raw_response)
     except Op001MalformedModelResponse:
         _save_op001_model_run(
-            provider,
-            repository,
-            intelligence_run_id,
-            "succeeded",
-            started_at,
-            started,
-            parameters,
-            None,
+            provider, repository, intelligence_run_id, "succeeded", started_at, parameters, None, raw_response
         )
         raise
 
     _save_op001_model_run(
-        provider,
-        repository,
-        intelligence_run_id,
-        "succeeded",
-        started_at,
-        started,
-        parameters,
-        None,
+        provider, repository, intelligence_run_id, "succeeded", started_at, parameters, None, raw_response
     )
     return convert_op001_model_response(response, model_input)
 
@@ -301,11 +285,30 @@ def _save_op001_model_run(
     intelligence_run_id: str,
     status: Literal["succeeded", "failed"],
     started_at: datetime,
-    started: float,
-    inference_parameters: dict[str, Any],
+    requested_parameters: dict[str, Any],
     error: str | None,
+    raw_response: object = None,
+    failure: Exception | None = None,
 ) -> None:
+    # Telemetry is taken only from the artifacts of this very call: the returned value on
+    # success, the raised error on failure. Provider-wide "last_*" state is never read.
     finished_at = datetime.now(timezone.utc)
+    inference_parameters: dict[str, Any] | None
+    if failure is not None:
+        duration_ms = getattr(failure, "duration_ms", None)
+        # Unknown unless the error carries parameters that were actually resolved; rejected
+        # requests are never recorded as parameters that were used.
+        inference_parameters = getattr(failure, "inference_parameters", None)
+    else:
+        telemetry = getattr(raw_response, "telemetry", None)
+        if telemetry is not None:
+            duration_ms = telemetry.duration_ms
+            inference_parameters = dict(telemetry.inference_parameters)
+        else:
+            # Provider reports no telemetry: no duration is established. The call succeeded,
+            # so the parameters it was given were accepted.
+            duration_ms = None
+            inference_parameters = requested_parameters
     repository.save_model_run(
         ModelRun(
             intelligence_run_id=intelligence_run_id,
@@ -313,19 +316,11 @@ def _save_op001_model_run(
             model=getattr(provider, "model_name", None),
             model_artifact_hash=getattr(provider, "model_artifact_hash", None),
             quantization=getattr(provider, "quantization", None),
-            inference_parameters=getattr(provider, "last_effective_inference_parameters", inference_parameters),
+            inference_parameters=inference_parameters,
             started_at=started_at,
             finished_at=finished_at,
-            total_ms=_provider_duration_ms(provider, started),
+            total_ms=duration_ms,
             status=status,
             error=error,
         )
     )
-
-
-def _provider_duration_ms(provider: ModelProvider, started: float) -> float:
-    invocation = getattr(provider, "last_invocation", None)
-    duration_ms = getattr(invocation, "duration_ms", None)
-    if duration_ms is not None:
-        return duration_ms
-    return (perf_counter() - started) * 1000

@@ -3,12 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import threading
+from unittest import mock
 from typing import Any
 
 import pytest
 
 from kci.contracts import EntityReference, EvidenceReference, Finding, IntelligenceContext, ObserverRun
-from kci.models import LlamaCppCliProvider, LlamaCppCliProviderError
+from kci.models import LlamaCppCliProvider, LlamaCppCliProviderError, ModelProvider
 from kci.models.llama_cpp import _decode_llama_completion_framing
 from kci.operations import Op001ModelAssistedOperation
 from kci.persistence import KciRepository, connect, initialize_database
@@ -345,3 +347,315 @@ def test_op001_integration_malformed_output_is_operation_failure_not_provider_fa
     row = repo.connection.execute("SELECT status, error FROM model_runs").fetchone()
     assert row["status"] == "succeeded"
     assert row["error"] is None
+
+
+class ScriptedRunner:
+    """Process runner that replays one scripted outcome per call (value or exception)."""
+
+    def __init__(self, *outcomes: Any) -> None:
+        self.outcomes = list(outcomes)
+
+    def __call__(self, argv, **kwargs):
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return subprocess.CompletedProcess(argv, 0, stdout=outcome, stderr="")
+
+
+class FakeClock:
+    """Deterministic replacement for the provider's perf_counter (seconds)."""
+
+    def __init__(self, *readings: float) -> None:
+        self.readings = list(readings)
+
+    def __call__(self) -> float:
+        return self.readings.pop(0)
+
+
+def with_clock(*readings: float):
+    return mock.patch("kci.models.llama_cpp.perf_counter", FakeClock(*readings))
+
+
+def model_run_rows(repo: KciRepository):
+    return repo.connection.execute(
+        "SELECT status, total_ms, inference_parameters_json, error FROM model_runs ORDER BY created_at, rowid"
+    ).fetchall()
+
+
+def run_op001(provider, context, repo, configuration):
+    return run_intelligence_operation(Op001ModelAssistedOperation(provider), context, repo, configuration)
+
+
+class StubTelemetryProvider(ModelProvider):
+    """Backend-neutral double: returns a plain str or raises a prepared exception."""
+
+    provider_name = "stub-telemetry"
+
+    def __init__(self, outcome: Any) -> None:
+        self.outcome = outcome
+
+    def generate(self, task, context, output_schema, inference_parameters=None):
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+# --- Part A / D.1, D.2: duration semantics ---------------------------------------------------
+
+
+def test_successful_invocation_records_its_measured_duration_and_effective_parameters(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    context = persist_context(repo)
+    provider = make_provider(tmp_path, ScriptedRunner('{"patterns":[]}'), default_inference_parameters={"seed": 7})
+
+    with with_clock(10.0, 10.25):
+        run_op001(provider, context, repo, {"temperature": 0.1})
+
+    (row,) = model_run_rows(repo)
+    assert row["status"] == "succeeded"
+    assert row["total_ms"] == 250.0
+    assert json.loads(row["inference_parameters_json"]) == {"seed": 7, "temperature": 0.1}
+
+
+def test_pre_execution_rejection_records_null_duration_and_null_parameters(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    context = persist_context(repo)
+    provider = make_provider(tmp_path, ScriptedRunner())
+
+    with with_clock():  # any clock read would raise: nothing may be timed before execution
+        result = run_op001(provider, context, repo, {"temperature": 0.9, "bogus": 1})
+
+    (row,) = model_run_rows(repo)
+    assert result.run.status == "failed"
+    assert "unsupported inference parameter(s): bogus" in row["error"]
+    assert row["total_ms"] is None
+    # Rejected, unvalidated parameters are never recorded as parameters that were used.
+    assert row["inference_parameters_json"] == "null"
+
+
+def test_failure_duration_comes_from_the_actual_exception(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    context = persist_context(repo)
+    error = LlamaCppCliProviderError(
+        "timeout", "timed out", duration_ms=12345.0, inference_parameters={"temperature": 0.7}
+    )
+
+    run_op001(StubTelemetryProvider(error), context, repo, {"temperature": 0.7})
+
+    (row,) = model_run_rows(repo)
+    assert row["total_ms"] == 12345.0
+    assert json.loads(row["inference_parameters_json"]) == {"temperature": 0.7}
+
+
+@pytest.mark.parametrize(
+    "outcome, category, expected_ms",
+    [
+        (subprocess.TimeoutExpired(["llama"], 1), "timeout", 40.0),
+        (OSError("cannot start"), "process_start", 40.0),
+        (RuntimeError("runner exploded"), "provider_internal", 40.0),
+    ],
+)
+def test_real_provider_failures_record_the_measured_duration(tmp_path, outcome, category, expected_ms) -> None:
+    repo = make_repo(tmp_path)
+    context = persist_context(repo)
+    provider = make_provider(tmp_path, ScriptedRunner(outcome))
+
+    with with_clock(5.0, 5.04):
+        run_op001(provider, context, repo, {"temperature": 0.2})
+
+    (row,) = model_run_rows(repo)
+    assert row["status"] == "failed"
+    assert row["total_ms"] == pytest.approx(expected_ms)
+    assert json.loads(row["inference_parameters_json"]) == {"temperature": 0.2}
+
+
+def test_nonzero_exit_records_the_measured_duration(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    context = persist_context(repo)
+    provider = make_provider(tmp_path, RecordingRunner(returncode=2, stderr="failed"))
+
+    with with_clock(1.0, 1.5):
+        run_op001(provider, context, repo, {"temperature": 0.2})
+
+    (row,) = model_run_rows(repo)
+    assert row["total_ms"] == 500.0
+
+
+def test_provider_without_telemetry_gets_null_duration_not_operation_wall_clock(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    context = persist_context(repo)
+
+    run_op001(StubTelemetryProvider('{"patterns":[]}'), context, repo, {"temperature": 0.3})
+    run_op001(StubTelemetryProvider(RuntimeError("boom")), context, repo, {"temperature": 0.3})
+
+    ok, failed = model_run_rows(repo)
+    assert ok["total_ms"] is None
+    assert failed["total_ms"] is None
+
+
+# --- Part B / D.3: requested versus effective parameters -------------------------------------
+
+
+def test_failed_invocation_records_effective_not_requested_parameters(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    context = persist_context(repo)
+    provider = make_provider(
+        tmp_path,
+        ScriptedRunner(subprocess.TimeoutExpired(["llama"], 1)),
+        default_inference_parameters={"seed": 7, "top_p": 0.9},
+    )
+
+    run_op001(provider, context, repo, {"temperature": 0.7})
+
+    (row,) = model_run_rows(repo)
+    assert json.loads(row["inference_parameters_json"]) == {"seed": 7, "temperature": 0.7, "top_p": 0.9}
+
+
+def test_unresolved_parameters_are_unknown_not_empty_and_not_requested(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    context = persist_context(repo)
+
+    run_op001(StubTelemetryProvider(RuntimeError("boom")), context, repo, {"temperature": 0.3})
+
+    (row,) = model_run_rows(repo)
+    assert row["inference_parameters_json"] == "null"
+    assert row["inference_parameters_json"] != "{}"
+
+
+def test_succeeding_provider_without_telemetry_records_the_accepted_request(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    context = persist_context(repo)
+
+    run_op001(StubTelemetryProvider('{"patterns":[]}'), context, repo, {"temperature": 0.3})
+
+    (row,) = model_run_rows(repo)
+    assert json.loads(row["inference_parameters_json"]) == {"temperature": 0.3}
+
+
+def test_error_carries_effective_parameters_only_after_resolution(tmp_path) -> None:
+    provider = make_provider(tmp_path, RecordingRunner(returncode=3), default_inference_parameters={"seed": 1})
+
+    with pytest.raises(LlamaCppCliProviderError) as executed:
+        provider.generate("task", {}, {"type": "object"}, {"temperature": 0.2})
+    with pytest.raises(LlamaCppCliProviderError) as rejected:
+        provider.generate("task", {}, {"type": "object"}, {"bogus": 1})
+
+    assert executed.value.inference_parameters == {"seed": 1, "temperature": 0.2}
+    assert executed.value.duration_ms is not None
+    assert rejected.value.category == "configuration"
+    assert rejected.value.inference_parameters is None
+    assert rejected.value.duration_ms is None
+
+
+# --- Part C / D.4, D.5: attribution under interleaving, sequential regression ---------------
+
+
+class InterleavingProvider(LlamaCppCliProvider):
+    """Runs a second, complete invocation after the first returned but before the caller used it."""
+
+    def generate(self, *args, **kwargs):
+        first = super().generate(*args, **kwargs)
+        if not getattr(self, "_interleaved", False):
+            self._interleaved = True
+            super().generate("intruder", {}, {"type": "object"}, {"temperature": 0.99})
+        return first
+
+
+def test_success_telemetry_is_attributed_to_its_own_call_under_interleaving(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    context = persist_context(repo)
+    executable, model = make_files(tmp_path)
+    provider = InterleavingProvider(
+        executable, model, timeout_s=3, process_runner=ScriptedRunner('{"patterns":[]}', '{"patterns":[]}')
+    )
+
+    with with_clock(0.0, 0.2, 1.0, 1.01):  # call A: 200 ms, interleaved call C: 10 ms
+        run_op001(provider, context, repo, {"temperature": 0.1})
+
+    (row,) = model_run_rows(repo)
+    assert row["total_ms"] == pytest.approx(200.0)
+    assert json.loads(row["inference_parameters_json"]) == {"temperature": 0.1}
+    # The intruding call really did overwrite the provider-wide diagnostic state.
+    assert provider.last_effective_inference_parameters == {"temperature": 0.99}
+
+
+def test_returned_telemetry_is_call_local_and_immutable(tmp_path) -> None:
+    provider = make_provider(tmp_path, ScriptedRunner('{"a":1}', '{"b":2}'))
+
+    with with_clock(0.0, 0.1, 1.0, 1.3):
+        first = provider.generate("t", {}, {"type": "object"}, {"temperature": 0.1})
+        second = provider.generate("t", {}, {"type": "object"}, {"temperature": 0.2})
+
+    assert first == '{"a":1}' and isinstance(first, str)
+    assert first.telemetry.duration_ms == pytest.approx(100.0)
+    assert dict(first.telemetry.inference_parameters) == {"temperature": 0.1}
+    assert second.telemetry.duration_ms == pytest.approx(300.0)
+    with pytest.raises(TypeError):
+        first.telemetry.inference_parameters["temperature"] = 5  # type: ignore[index]
+
+
+def test_concurrent_rejection_does_not_touch_the_active_call_or_time_the_rejection(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    context = persist_context(repo)
+    started, release = threading.Event(), threading.Event()
+
+    def blocking_runner(argv, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return subprocess.CompletedProcess(argv, 0, stdout='{"patterns":[]}', stderr="")
+
+    provider = make_provider(tmp_path, blocking_runner)
+    results: list[Any] = []
+    worker = threading.Thread(
+        target=lambda: results.append(provider.generate("t", {}, {"type": "object"}, {"temperature": 0.1}))
+    )
+    worker.start()
+    assert started.wait(5)
+    try:
+        result = run_op001(provider, context, repo, {"temperature": 0.5})
+    finally:
+        release.set()
+        worker.join(5)
+
+    (row,) = model_run_rows(repo)
+    assert result.run.status == "failed"
+    assert "active inference" in row["error"]
+    assert row["total_ms"] is None
+    assert row["inference_parameters_json"] == "null"
+    assert dict(results[0].telemetry.inference_parameters) == {"temperature": 0.1}
+
+
+def test_sequential_invocations_each_record_their_own_telemetry(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    context = persist_context(repo)
+    provider = make_provider(
+        tmp_path,
+        ScriptedRunner('{"patterns":[]}', subprocess.TimeoutExpired(["llama"], 1), '{"patterns":[]}'),
+        default_inference_parameters={"seed": 7},
+    )
+
+    with with_clock(0.0, 0.1, 1.0, 1.02, 2.0, 2.3):
+        run_op001(provider, context, repo, {"temperature": 0.1})
+        run_op001(provider, context, repo, {"temperature": 0.5})
+        run_op001(provider, context, repo, {"temperature": 0.9})
+
+    rows = model_run_rows(repo)
+    assert [r["status"] for r in rows] == ["succeeded", "failed", "succeeded"]
+    assert [r["total_ms"] for r in rows] == [pytest.approx(100.0), pytest.approx(20.0), pytest.approx(300.0)]
+    assert [json.loads(r["inference_parameters_json"]) for r in rows] == [
+        {"seed": 7, "temperature": 0.1},
+        {"seed": 7, "temperature": 0.5},
+        {"seed": 7, "temperature": 0.9},
+    ]
+
+
+def test_provider_diagnostic_state_is_still_reset_at_start_of_every_call(tmp_path) -> None:
+    provider = make_provider(tmp_path, ScriptedRunner('{"patterns":[]}'))
+    provider.generate("task", {}, {"type": "object"}, {"temperature": 0.3})
+    assert provider.last_invocation is not None
+
+    with pytest.raises(LlamaCppCliProviderError):
+        provider.generate("task", {}, {}, {"temperature": 0.4})
+
+    assert provider.last_invocation is None
+    assert provider.last_effective_inference_parameters is None
