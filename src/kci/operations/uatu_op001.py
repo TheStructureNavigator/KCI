@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -8,7 +9,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from kci.contracts import EntityReference, Finding, InsightCandidate, IntelligenceContext, IntelligenceRun, ModelRun
-from kci.models import ModelProvider
+from kci.error_hygiene import (
+    describe_validation_errors,
+    issues_from_validation_error,
+    safe_error_message,
+    trusted_message_type,
+)
+from kci.models import InferenceParameters, InferenceParametersError, ModelProvider
 from kci.operations.base import IntelligenceOperation
 from kci.persistence.repository import KciRepository
 
@@ -25,11 +32,15 @@ class Op001ModelBoundaryError(RuntimeError):
     pass
 
 
+@trusted_message_type
 class Op001ModelInvocationError(Op001ModelBoundaryError):
+    # Message is always the output of safe_error_message().
     pass
 
 
+@trusted_message_type
 class Op001MalformedModelResponse(Op001ModelBoundaryError):
+    # Messages contain only line/column numbers or sanitized field names and pydantic error types.
     pass
 
 
@@ -116,11 +127,15 @@ def parse_op001_model_response(raw_response: str | dict[str, Any]) -> Op001Model
     try:
         data = json.loads(raw_response) if isinstance(raw_response, str) else raw_response
     except json.JSONDecodeError as exc:
-        raise Op001MalformedModelResponse(f"model response is not valid JSON: {exc}") from exc
+        raise Op001MalformedModelResponse(
+            f"model response is not valid JSON (line {exc.lineno}, column {exc.colno})"
+        ) from exc
     try:
         return Op001ModelResponse.model_validate(data)
     except ValidationError as exc:
-        raise Op001MalformedModelResponse(f"model response does not match OP-001 schema: {exc}") from exc
+        raise Op001MalformedModelResponse(
+            f"model response does not match OP-001 schema: {describe_validation_errors(exc)}"
+        ) from exc
 
 
 def convert_op001_model_response(
@@ -198,28 +213,28 @@ def invoke_op001_model_boundary(
             inference_parameters=parameters,
         )
     except Exception as exc:
+        message = safe_error_message(exc)
         _save_op001_model_run(
             provider,
             repository,
             intelligence_run_id,
             "failed",
             started_at,
-            parameters,
-            str(exc),
+            message,
             failure=exc,
         )
-        raise Op001ModelInvocationError(str(exc)) from exc
+        raise Op001ModelInvocationError(message) from exc
 
     try:
         response = parse_op001_model_response(raw_response)
     except Op001MalformedModelResponse:
         _save_op001_model_run(
-            provider, repository, intelligence_run_id, "succeeded", started_at, parameters, None, raw_response
+            provider, repository, intelligence_run_id, "succeeded", started_at, None, raw_response
         )
         raise
 
     _save_op001_model_run(
-        provider, repository, intelligence_run_id, "succeeded", started_at, parameters, None, raw_response
+        provider, repository, intelligence_run_id, "succeeded", started_at, None, raw_response
     )
     return convert_op001_model_response(response, model_input)
 
@@ -229,7 +244,15 @@ class Op001ModelAssistedOperation(IntelligenceOperation):
     operation_version = OP001_OPERATION_VERSION
     deterministic = False
 
-    def __init__(self, provider: ModelProvider) -> None:
+    def __init__(self, provider: ModelProvider, inference_parameters: Mapping[str, Any] | None = None) -> None:
+        # Inference parameters belong to the composition boundary, not to per-run configuration.
+        # Validated once here; analytical configuration for OP-001 v1 is always empty.
+        requested = dict(inference_parameters or {})
+        try:
+            InferenceParameters.model_validate(requested)
+        except ValidationError as exc:
+            raise InferenceParametersError(issues_from_validation_error(exc)) from None
+        self._inference_parameters: dict[str, Any] = json.loads(json.dumps(requested, sort_keys=True))
         self.provider = provider
         self.model_output_rejections: list[Op001ModelOutputRejection] = []
         self._repository: KciRepository | None = None
@@ -239,10 +262,9 @@ class Op001ModelAssistedOperation(IntelligenceOperation):
         self._repository = repository
         self._run = run
 
-    def effective_configuration(self, requested_configuration: dict[str, Any] | None = None) -> dict[str, Any]:
-        if requested_configuration:
-            return dict(requested_configuration)
-        return {}
+    @property
+    def inference_parameters(self) -> dict[str, Any]:
+        return dict(self._inference_parameters)
 
     def synthesize(self, context: IntelligenceContext, configuration: dict[str, Any]) -> list[InsightCandidate]:
         if self._repository is None or self._run is None:
@@ -254,7 +276,7 @@ class Op001ModelAssistedOperation(IntelligenceOperation):
                 model_input,
                 self._run.run_id,
                 self._repository,
-                inference_parameters=configuration,
+                inference_parameters=self.inference_parameters,
             )
         finally:
             self._run.model_runs_count += 1
@@ -285,7 +307,6 @@ def _save_op001_model_run(
     intelligence_run_id: str,
     status: Literal["succeeded", "failed"],
     started_at: datetime,
-    requested_parameters: dict[str, Any],
     error: str | None,
     raw_response: object = None,
     failure: Exception | None = None,
@@ -305,10 +326,10 @@ def _save_op001_model_run(
             duration_ms = telemetry.duration_ms
             inference_parameters = dict(telemetry.inference_parameters)
         else:
-            # Provider reports no telemetry: no duration is established. The call succeeded,
-            # so the parameters it was given were accepted.
+            # No trustworthy per-call telemetry: nothing is established, and requested
+            # parameters are never echoed as effective ones.
             duration_ms = None
-            inference_parameters = requested_parameters
+            inference_parameters = None
     repository.save_model_run(
         ModelRun(
             intelligence_run_id=intelligence_run_id,

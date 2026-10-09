@@ -32,6 +32,7 @@ class StubProvider(ModelProvider):
         self.last_task: str | None = None
         self.last_context: dict[str, Any] | None = None
         self.last_output_schema: dict[str, Any] | None = None
+        self.last_inference_parameters: dict[str, Any] | None = None
 
     def generate(
         self,
@@ -44,6 +45,7 @@ class StubProvider(ModelProvider):
         self.last_task = task
         self.last_context = context
         self.last_output_schema = output_schema
+        self.last_inference_parameters = inference_parameters
         if isinstance(self.response, Exception):
             raise self.response
         return self.response
@@ -308,7 +310,8 @@ def test_provider_failures_are_not_converted_to_empty_success(tmp_path, exc) -> 
     assert provider.calls == 1
     row = repo.connection.execute("SELECT status, error FROM model_runs").fetchone()
     assert row["status"] == "failed"
-    assert str(exc) in row["error"]
+    assert row["error"] == f"{type(exc).__name__}: message withheld"
+    assert str(exc) not in row["error"]
 
 
 def test_malformed_top_level_response_is_not_converted_to_empty_success_or_retried(tmp_path) -> None:
@@ -334,10 +337,9 @@ def test_operation_projects_input_and_converts_valid_model_output_through_runtim
     provider = StubProvider(raw_response([raw_pattern()]))
 
     result = run_intelligence_operation(
-        Op001ModelAssistedOperation(provider),
+        Op001ModelAssistedOperation(provider, inference_parameters={"temperature": 0, "max_output_tokens": 512}),
         context,
         repo,
-        requested_configuration={"temperature": 0, "max_output_tokens": 512},
     )
 
     assert result.run.status == "succeeded"
@@ -347,8 +349,13 @@ def test_operation_projects_input_and_converts_valid_model_output_through_runtim
     assert provider.calls == 1
     assert provider.last_task == "uatu.cross_finding_pattern_synthesis"
     assert [finding["finding_id"] for finding in provider.last_context["findings"]] == ["F_A", "F_B", "F_C"]
+    # Inference parameters come from operation construction and are passed to the provider ...
+    assert provider.last_inference_parameters == {"max_output_tokens": 512, "temperature": 0}
+    # ... but this provider reports no effective parameters, so none are recorded as effective.
     model_run = repo.connection.execute("SELECT inference_parameters_json FROM model_runs").fetchone()
-    assert model_run["inference_parameters_json"] == '{"max_output_tokens":512,"temperature":0}'
+    assert model_run["inference_parameters_json"] == "null"
+    run_row = repo.connection.execute("SELECT effective_configuration_json FROM intelligence_runs").fetchone()
+    assert run_row["effective_configuration_json"] == "{}"
 
 
 def test_model_output_rejections_are_not_runtime_candidate_rejections(tmp_path) -> None:

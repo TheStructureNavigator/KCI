@@ -5,6 +5,33 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field
+
+from kci.error_hygiene import ConfigurationIssueError, trusted_message_type
+
+
+@trusted_message_type
+class InferenceParametersError(ConfigurationIssueError):
+    """Inference parameters were rejected. Built only from (field, ConfigurationReason) pairs."""
+
+    label = "invalid inference parameters"
+
+
+class InferenceParameters(BaseModel):
+    """Backend-neutral generation parameters an operation may request.
+
+    Resource and runtime settings (threads, GPU layers, context size) are provider-owned
+    infrastructure and are deliberately absent. Engine defaults are never invented: an
+    unset parameter stays unset.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+    temperature: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    top_p: float | None = Field(default=None, gt=0, le=1, allow_inf_nan=False)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    seed: int | None = Field(default=None, ge=0)
+
 
 @dataclass(frozen=True)
 class InvocationTelemetry:

@@ -3,6 +3,7 @@ from kci.runtime.insight_validation import InsightValidationFailure, promote_ins
 from kci.runtime.intelligence_runner import (
     IntelligenceExecutionResult,
     IntelligencePreconditionFailed,
+    PreconditionReason,
     run_intelligence_operation,
 )
 from kci.runtime.runner import ObserverExecutionResult, RequirementsNotSatisfied, run_observer, verify_requirements
@@ -14,6 +15,7 @@ __all__ = [
     "IntelligenceExecutionResult",
     "IntelligencePreconditionFailed",
     "ObserverExecutionResult",
+    "PreconditionReason",
     "RequirementsNotSatisfied",
     "ValidationFailure",
     "build_intelligence_context",
