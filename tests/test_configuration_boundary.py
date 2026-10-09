@@ -383,12 +383,26 @@ def test_real_provider_failures_persist_only_stable_messages(tmp_path, outcome, 
 def test_malformed_model_output_is_not_persisted_in_error_text(tmp_path) -> None:
     repo = make_repo(tmp_path)
     context = persist_context(repo)
-    leaked = f'{{"patterns":[{{"title":"{SECRET}","unexpected":"{SECRET}"}}]}}'
+    leaked = f'{{"patterns":"{SECRET}"}}'
 
     result = run_intelligence_operation(Op001ModelAssistedOperation(CapturingProvider(leaked)), context, repo)
 
     assert result.run.status == "failed"
     assert "model response does not match OP-001 schema" in result.run.error
+    assert SECRET not in persisted_text(repo)
+
+
+def test_invalid_pattern_content_is_not_echoed_into_rejection_details_or_the_database(tmp_path) -> None:
+    repo = make_repo(tmp_path)
+    context = persist_context(repo)
+    leaked = f'{{"patterns":[{{"title":"{SECRET}","unexpected":"{SECRET}"}}]}}'
+    operation = Op001ModelAssistedOperation(CapturingProvider(leaked))
+
+    result = run_intelligence_operation(operation, context, repo)
+
+    assert result.run.status == "succeeded"  # an invalid individual pattern is a rejection, not a failure
+    assert [r.failure_category for r in operation.model_output_rejections] == ["schema"]
+    assert SECRET not in "".join(r.detail for r in operation.model_output_rejections)
     assert SECRET not in persisted_text(repo)
 
 

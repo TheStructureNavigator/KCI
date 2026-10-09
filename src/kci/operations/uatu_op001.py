@@ -17,12 +17,21 @@ from kci.error_hygiene import (
 )
 from kci.models import InferenceParameters, InferenceParametersError, ModelProvider
 from kci.operations.base import IntelligenceOperation
+from kci.operations.op001_policy import (
+    OP001_INSTRUCTIONS,
+    find_abstention,
+    find_foreign_finding_reference,
+    find_tripwire,
+    find_ungrounded_reference,
+    text_problem,
+)
 from kci.persistence.repository import KciRepository
 
 
 OP001_CATEGORY = "uatu.cross_finding_pattern"
 OP001_OPERATION_ID = "uatu.cross_finding_pattern_synthesis"
-OP001_OPERATION_VERSION = "model-boundary-v1"
+# Bump whenever OP-001 instructions or deterministic output rules (op001_policy) change behavior (Contract 008.5).
+OP001_OPERATION_VERSION = "analytical-safety-v1"
 
 Op001PatternType = Literal["co_occurring", "recurring", "compound"]
 Op001Significance = Literal["low", "medium", "high"]
@@ -112,6 +121,23 @@ class Op001ModelOutputRejection:
 class Op001CandidateConversionResult:
     candidates: list[InsightCandidate]
     rejections: list[Op001ModelOutputRejection]
+    patterns_received: int = 0
+
+
+@dataclass(frozen=True)
+class Op001ParsedResponse:
+    """Top-level-valid response: structurally valid patterns plus per-pattern schema rejections."""
+
+    patterns: list[Op001ModelPattern]
+    pattern_indices: list[int]
+    rejections: list[Op001ModelOutputRejection]
+    received: int
+
+
+class _Op001TopLevel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    patterns: list[Any]
 
 
 def project_op001_model_input(context: IntelligenceContext, repository: KciRepository) -> Op001ModelInput:
@@ -123,7 +149,13 @@ def project_op001_model_input(context: IntelligenceContext, repository: KciRepos
     return Op001ModelInput(findings=projected)
 
 
-def parse_op001_model_response(raw_response: str | dict[str, Any]) -> Op001ModelResponse:
+def parse_op001_model_response(raw_response: str | dict[str, Any]) -> Op001ParsedResponse:
+    """Parse a raw model response.
+
+    A malformed *top level* (not JSON, not an object, extra/missing keys, ``patterns`` not a list)
+    raises ``Op001MalformedModelResponse`` and fails the run. An invalid *individual* pattern is
+    rejected on its own (category ``schema``) and never discards its valid siblings.
+    """
     try:
         data = json.loads(raw_response) if isinstance(raw_response, str) else raw_response
     except json.JSONDecodeError as exc:
@@ -131,35 +163,51 @@ def parse_op001_model_response(raw_response: str | dict[str, Any]) -> Op001Model
             f"model response is not valid JSON (line {exc.lineno}, column {exc.colno})"
         ) from exc
     try:
-        return Op001ModelResponse.model_validate(data)
+        top = _Op001TopLevel.model_validate(data)
     except ValidationError as exc:
         raise Op001MalformedModelResponse(
             f"model response does not match OP-001 schema: {describe_validation_errors(exc)}"
         ) from exc
+    patterns: list[Op001ModelPattern] = []
+    indices: list[int] = []
+    rejections: list[Op001ModelOutputRejection] = []
+    for index, item in enumerate(top.patterns):
+        try:
+            patterns.append(Op001ModelPattern.model_validate(item))
+            indices.append(index)
+        except ValidationError as exc:
+            rejections.append(Op001ModelOutputRejection(index, "schema", describe_validation_errors(exc)))
+    return Op001ParsedResponse(patterns, indices, rejections, received=len(top.patterns))
 
 
 def convert_op001_model_response(
-    response: Op001ModelResponse,
+    response: Op001ModelResponse | Op001ParsedResponse,
     model_input: Op001ModelInput,
 ) -> Op001CandidateConversionResult:
+    """Validate each pattern independently and build InsightCandidates from the valid ones.
+
+    Rejection only: text, support and subjects are never rewritten, added or removed. At most one
+    rejection (the first failing check, in the order below) is recorded per pattern.
+    """
     candidates: list[InsightCandidate] = []
-    rejections: list[Op001ModelOutputRejection] = []
+    rejections: list[Op001ModelOutputRejection] = list(getattr(response, "rejections", ()))
+    indices = list(getattr(response, "pattern_indices", range(len(response.patterns))))
+    received = getattr(response, "received", len(response.patterns))
     input_finding_ids = {finding.finding_id for finding in model_input.findings}
+    findings_by_id = {finding.finding_id: finding for finding in model_input.findings}
     subjects_by_finding_id = {
         finding.finding_id: {(subject.entity_type, subject.entity_id) for subject in finding.subjects}
         for finding in model_input.findings
     }
+    accepted_supports: set[frozenset[str]] = set()
 
-    for index, pattern in enumerate(response.patterns):
+    def reject(index: int, category: str, detail: str) -> None:
+        rejections.append(Op001ModelOutputRejection(index, category, detail))
+
+    for index, pattern in zip(indices, response.patterns):
         unknown_support = sorted(set(pattern.supporting_finding_ids) - input_finding_ids)
         if unknown_support:
-            rejections.append(
-                Op001ModelOutputRejection(
-                    index,
-                    "support",
-                    f"supporting finding_id value(s) outside OP-001 input: {', '.join(unknown_support)}",
-                )
-            )
+            reject(index, "support", f"supporting finding_id value(s) outside OP-001 input: {', '.join(unknown_support)}")
             continue
 
         grounded_subjects: set[tuple[str, str]] = set()
@@ -168,14 +216,43 @@ def convert_op001_model_response(
         output_subjects = {(subject.entity_type, subject.entity_id) for subject in pattern.subjects}
         ungrounded_subjects = sorted(output_subjects - grounded_subjects)
         if ungrounded_subjects:
-            rejections.append(
-                Op001ModelOutputRejection(
-                    index,
-                    "subject_grounding",
-                    f"output subject(s) not grounded in supporting Findings: {ungrounded_subjects}",
-                )
-            )
+            reject(index, "subject_grounding", f"output subject(s) not grounded in supporting Findings: {ungrounded_subjects}")
             continue
+
+        problem = text_problem(pattern.title, pattern.synthesis)
+        if problem is not None:
+            reject(index, "text", f"rule {problem}")
+            continue
+
+        reference_problem = find_foreign_finding_reference(
+            pattern.title, pattern.synthesis, pattern.supporting_finding_ids, input_finding_ids
+        )
+        if reference_problem is not None:
+            reject(index, reference_problem, "text cites a Finding identifier outside this pattern's support")
+            continue
+        supporting_text = "\n".join(
+            _grounding_text(findings_by_id[finding_id]) for finding_id in pattern.supporting_finding_ids
+        )
+        if find_ungrounded_reference(pattern.title, pattern.synthesis, supporting_text):
+            reject(index, "fabricated_reference", "text cites an evidence-style reference absent from the supporting Findings")
+            continue
+
+        tripwire = find_tripwire(pattern.title, pattern.synthesis)
+        if tripwire is not None:
+            category, rule_id = tripwire
+            reject(index, category, f"rule {rule_id}")
+            continue
+
+        abstention = find_abstention(pattern.title, pattern.synthesis)
+        if abstention is not None:
+            reject(index, "abstention_text", f"rule {abstention}")
+            continue
+
+        support_set = frozenset(pattern.supporting_finding_ids)
+        if support_set in accepted_supports:
+            reject(index, "duplicate_support", "an earlier accepted pattern has the same supporting Finding set")
+            continue
+        accepted_supports.add(support_set)
 
         candidates.append(
             InsightCandidate(
@@ -189,7 +266,15 @@ def convert_op001_model_response(
             )
         )
 
-    return Op001CandidateConversionResult(candidates=candidates, rejections=rejections)
+    rejections.sort(key=lambda rejection: rejection.pattern_index)
+    return Op001CandidateConversionResult(candidates=candidates, rejections=rejections, patterns_received=received)
+
+
+def _grounding_text(finding: Op001ModelFinding) -> str:
+    subjects = " ".join(f"{subject.entity_type}:{subject.entity_id}" for subject in finding.subjects)
+    return "\n".join(
+        [finding.title, finding.observation, finding.category, finding.observer_id, subjects, json.dumps(finding.metadata, sort_keys=True)]
+    )
 
 
 def op001_output_schema() -> dict[str, Any]:
@@ -207,7 +292,9 @@ def invoke_op001_model_boundary(
     parameters = dict(inference_parameters or {})
     try:
         raw_response = provider.generate(
-            OP001_OPERATION_ID,
+            # Operation-owned instructions travel as the generic ``task``; Finding content travels only
+            # as ``context`` data, never inside the instructions (untrusted-data delimitation).
+            OP001_INSTRUCTIONS,
             model_input.model_dump(mode="json"),
             op001_output_schema(),
             inference_parameters=parameters,
@@ -255,12 +342,24 @@ class Op001ModelAssistedOperation(IntelligenceOperation):
         self._inference_parameters: dict[str, Any] = json.loads(json.dumps(requested, sort_keys=True))
         self.provider = provider
         self.model_output_rejections: list[Op001ModelOutputRejection] = []
+        self._diagnostics: dict[str, Any] = _empty_diagnostics("not_received")
         self._repository: KciRepository | None = None
         self._run: IntelligenceRun | None = None
 
     def begin_intelligence_run(self, repository: KciRepository, run: IntelligenceRun) -> None:
         self._repository = repository
         self._run = run
+        # Per-run state: never carry rejections or diagnostics over from an earlier run.
+        self.model_output_rejections = []
+        self._diagnostics = _empty_diagnostics("not_received")
+
+    def execution_diagnostics(self) -> dict[str, Any]:
+        """Non-canonical diagnostics of the last execution: never persisted, never part of run counters.
+
+        Counts model-output rejections (before an InsightCandidate exists) by reason category, kept
+        distinct from Runtime candidate rejection (OP-001 spec, model invocation and failure semantics).
+        """
+        return json.loads(json.dumps(self._diagnostics))
 
     @property
     def inference_parameters(self) -> dict[str, Any]:
@@ -270,6 +369,8 @@ class Op001ModelAssistedOperation(IntelligenceOperation):
         if self._repository is None or self._run is None:
             raise RuntimeError("Op001ModelAssistedOperation requires IntelligenceRun binding before synthesis")
         model_input = project_op001_model_input(context, self._repository)
+        self.model_output_rejections = []
+        self._diagnostics = _empty_diagnostics("not_received")
         try:
             result = invoke_op001_model_boundary(
                 self.provider,
@@ -278,10 +379,36 @@ class Op001ModelAssistedOperation(IntelligenceOperation):
                 self._repository,
                 inference_parameters=self.inference_parameters,
             )
+        except Op001MalformedModelResponse:
+            self._diagnostics = _empty_diagnostics("malformed")
+            raise
+        except Op001ModelInvocationError:
+            self._diagnostics = _empty_diagnostics("provider_failure")
+            raise
         finally:
             self._run.model_runs_count += 1
         self.model_output_rejections = result.rejections
+        by_category: dict[str, int] = {}
+        for rejection in result.rejections:
+            by_category[rejection.failure_category] = by_category.get(rejection.failure_category, 0) + 1
+        self._diagnostics = {
+            "response": "parsed",
+            "patterns_received": result.patterns_received,
+            "patterns_accepted": len(result.candidates),
+            "patterns_rejected": len(result.rejections),
+            "rejected_by_category": dict(sorted(by_category.items())),
+        }
         return result.candidates
+
+
+def _empty_diagnostics(response: str) -> dict[str, Any]:
+    return {
+        "response": response,
+        "patterns_received": 0,
+        "patterns_accepted": 0,
+        "patterns_rejected": 0,
+        "rejected_by_category": {},
+    }
 
 
 def _project_finding(finding: Finding) -> Op001ModelFinding:

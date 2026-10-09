@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from time import perf_counter
@@ -19,6 +19,8 @@ class IntelligenceExecutionResult:
     run: IntelligenceRun
     insights: list[Insight]
     validation_failures: list[tuple[int, InsightValidationFailure]]
+    # Non-canonical, in-memory only: never persisted and never part of run counters or statuses.
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 class PreconditionReason(Enum):
@@ -64,6 +66,7 @@ def run_intelligence_operation(
     started = perf_counter()
     insights: list[Insight] = []
     validation_failures: list[tuple[int, InsightValidationFailure]] = []
+    operation_started = False
 
     try:
         if resolution_error is not None:
@@ -72,6 +75,7 @@ def run_intelligence_operation(
         begin_intelligence_run = getattr(operation, "begin_intelligence_run", None)
         if begin_intelligence_run is not None:
             begin_intelligence_run(repository, run)
+        operation_started = True
         candidates = operation.synthesize(context, effective_configuration)
         run.candidates_count = len(candidates)
         for index, candidate in enumerate(candidates):
@@ -104,7 +108,22 @@ def run_intelligence_operation(
         run.duration_ms = (perf_counter() - started) * 1000
         repository.update_intelligence_run(run)
 
-    return IntelligenceExecutionResult(run=run, insights=insights, validation_failures=validation_failures)
+    return IntelligenceExecutionResult(
+        run=run,
+        insights=insights,
+        validation_failures=validation_failures,
+        diagnostics=_collect_diagnostics(operation) if operation_started else {},
+    )
+
+
+def _collect_diagnostics(operation: IntelligenceOperation) -> dict[str, Any]:
+    hook = getattr(operation, "execution_diagnostics", None)
+    if hook is None:
+        return {}
+    try:
+        return dict(hook())
+    except Exception:
+        return {}
 
 
 def verify_intelligence_preconditions(context: IntelligenceContext, repository: KciRepository) -> None:
