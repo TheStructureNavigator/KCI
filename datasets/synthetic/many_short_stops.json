@@ -1,0 +1,65 @@
+{
+  "schema": "kci.dataset_envelope",
+  "schema_version": "1",
+  "dataset": "synthetic.production.shift",
+  "dataset_version": 1,
+  "snapshot_id": "many-short-stops-001",
+  "generated_at": "2026-10-04T08:00:00Z",
+  "content_hash": "sha256:cf5aa97fb7b41f07df6387fc8d901822bf0b118c2ff454cb9bb642fe82c549e2",
+  "period": {
+    "start": "2026-10-04T00:00:00Z",
+    "end": "2026-10-04T08:00:00Z"
+  },
+  "scope": {
+    "site": "fictional-home-lab",
+    "machine": "M-FICTION-04",
+    "shift": "A"
+  },
+  "evidence_records": [
+    {
+      "ref": "event:short:001",
+      "data": {
+        "category": "microstop",
+        "duration_minutes": 3
+      }
+    },
+    {
+      "ref": "event:short:002",
+      "data": {
+        "category": "microstop",
+        "duration_minutes": 4
+      }
+    },
+    {
+      "ref": "event:short:003",
+      "data": {
+        "category": "microstop",
+        "duration_minutes": 5
+      }
+    }
+  ],
+  "data": {
+    "summary": {
+      "entity_ref": "summary:many-short-stops-001",
+      "oee": 0.76,
+      "status": "unstable"
+    },
+    "downtime_events": [
+      {
+        "evidence_ref": "event:short:001",
+        "category": "microstop",
+        "duration_minutes": 3
+      },
+      {
+        "evidence_ref": "event:short:002",
+        "category": "microstop",
+        "duration_minutes": 4
+      },
+      {
+        "evidence_ref": "event:short:003",
+        "category": "microstop",
+        "duration_minutes": 5
+      }
+    ]
+  }
+}

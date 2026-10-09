@@ -1,0 +1,636 @@
+{
+  "schema": "kci.benchmark.uatu.op001",
+  "schema_version": "1.0",
+  "operation_id": "uatu.cross_finding_pattern_synthesis",
+  "scenarios": [
+    {
+      "scenario_id": "op001_positive_co_occurring_shift_handover",
+      "title": "Co-occurring handover instability",
+      "purpose": "Positive co_occurring pattern with a grounded operational context and an unrelated high-severity distractor.",
+      "findings": [
+        {
+          "finding_id": "F_HANDOVER_QUEUE",
+          "observer_id": "production.observer",
+          "category": "production.queue_growth",
+          "severity": "medium",
+          "title": "Queue growth after shift handover",
+          "observation": "Packaging cell P2 accumulated a work queue during the first hour after the 14:00 shift handover on Line A.",
+          "subjects": [{"entity_type": "production_cell", "entity_id": "P2"}],
+          "metadata": {"period": "2026-09-12T14:00/15:00", "line": "Line A"}
+        },
+        {
+          "finding_id": "F_HANDOVER_STAFFING",
+          "observer_id": "staffing.observer",
+          "category": "staffing.handover_gap",
+          "severity": "medium",
+          "title": "Coverage gap at handover",
+          "observation": "The Line A handover roster shows a 25 minute overlap gap for P2 operators at the 14:00 shift transition.",
+          "subjects": [{"entity_type": "production_cell", "entity_id": "P2"}],
+          "metadata": {"period": "2026-09-12T14:00/14:30", "line": "Line A"}
+        },
+        {
+          "finding_id": "F_UNRELATED_HIGH_SAFETY",
+          "observer_id": "safety.observer",
+          "category": "safety.guard_open",
+          "severity": "high",
+          "title": "Guard opened on separate cell",
+          "observation": "A guard-open event occurred on Line C during a maintenance check the same afternoon.",
+          "subjects": [{"entity_type": "production_line", "entity_id": "Line C"}],
+          "metadata": {"period": "2026-09-12T16:10/16:12"}
+        }
+      ],
+      "context_finding_ids": ["F_HANDOVER_QUEUE", "F_HANDOVER_STAFFING", "F_UNRELATED_HIGH_SAFETY"],
+      "expected_candidate_count": 1,
+      "expected_candidates": [
+        {
+          "pattern_type": "co_occurring",
+          "required_support": ["F_HANDOVER_QUEUE", "F_HANDOVER_STAFFING"],
+          "forbidden_support": ["F_UNRELATED_HIGH_SAFETY"],
+          "expected_significance": "medium",
+          "required_claims": ["joint interpretation stays scoped to Line A P2 handover context"],
+          "forbidden_claims": ["causality", "recommendation", "Line C relationship"],
+          "human_review_notes": "The candidate may say the queue and coverage gap form a handover-context pattern, but not that staffing caused the queue."
+        }
+      ],
+      "human_review_focus": ["relationship_grounding", "distractor_resistance", "unsupported_causality"]
+    },
+    {
+      "scenario_id": "op001_positive_recurring_same_observer_machine",
+      "title": "Recurring calibration drift on one machine",
+      "purpose": "Positive recurring pattern from analytically similar Findings with distinct temporal occurrences.",
+      "findings": [
+        {
+          "finding_id": "F_M14_DRIFT_MONDAY",
+          "observer_id": "quality.observer",
+          "category": "quality.calibration_drift",
+          "severity": "medium",
+          "title": "M14 calibration drift on Monday",
+          "observation": "Machine M14 produced measurements outside calibration tolerance during the Monday morning batch.",
+          "subjects": [{"entity_type": "machine", "entity_id": "M14"}],
+          "metadata": {"period": "2026-09-07T08:00/10:00"}
+        },
+        {
+          "finding_id": "F_M14_DRIFT_THURSDAY",
+          "observer_id": "quality.observer",
+          "category": "quality.calibration_drift",
+          "severity": "medium",
+          "title": "M14 calibration drift on Thursday",
+          "observation": "Machine M14 again produced measurements outside calibration tolerance during the Thursday afternoon batch.",
+          "subjects": [{"entity_type": "machine", "entity_id": "M14"}],
+          "metadata": {"period": "2026-09-10T13:00/15:00"}
+        },
+        {
+          "finding_id": "F_M14_LABEL_DELAY",
+          "observer_id": "logistics.observer",
+          "category": "logistics.label_delay",
+          "severity": "low",
+          "title": "Labels arrived late",
+          "observation": "A label roll for M14 arrived 12 minutes late on Wednesday.",
+          "subjects": [{"entity_type": "machine", "entity_id": "M14"}],
+          "metadata": {"period": "2026-09-09T09:00/09:20"}
+        }
+      ],
+      "context_finding_ids": ["F_M14_DRIFT_MONDAY", "F_M14_DRIFT_THURSDAY", "F_M14_LABEL_DELAY"],
+      "expected_candidate_count": 1,
+      "expected_candidates": [
+        {
+          "pattern_type": "recurring",
+          "required_support": ["F_M14_DRIFT_MONDAY", "F_M14_DRIFT_THURSDAY"],
+          "forbidden_support": ["F_M14_LABEL_DELAY"],
+          "expected_significance": "high",
+          "required_claims": ["calibration drift recurs for M14 across distinct observed periods"],
+          "forbidden_claims": ["prediction", "recommendation", "cause of drift"],
+          "human_review_notes": "Same Observer is allowed; recurrence is grounded by repeated drift observations at different times."
+        }
+      ],
+      "human_review_focus": ["pattern_detection", "significance_calibration"]
+    },
+    {
+      "scenario_id": "op001_positive_compound_onboarding_problem",
+      "title": "Compound onboarding friction",
+      "purpose": "Positive compound pattern where several Findings show materially different dimensions of one onboarding scope.",
+      "findings": [
+        {
+          "finding_id": "F_ONBOARD_TRAINING",
+          "observer_id": "training.observer",
+          "category": "training.completion_gap",
+          "severity": "medium",
+          "title": "Incomplete onboarding training",
+          "observation": "Three new operators assigned to Cell D had not completed the required first-week equipment module.",
+          "subjects": [{"entity_type": "team", "entity_id": "Cell D onboarding"}],
+          "metadata": {"scope": "Cell D onboarding"}
+        },
+        {
+          "finding_id": "F_ONBOARD_ACCESS",
+          "observer_id": "access.observer",
+          "category": "access.provisioning_delay",
+          "severity": "medium",
+          "title": "Delayed system access",
+          "observation": "Two of the same Cell D new operators lacked scanner login access during their first scheduled shift.",
+          "subjects": [{"entity_type": "team", "entity_id": "Cell D onboarding"}],
+          "metadata": {"scope": "Cell D onboarding"}
+        },
+        {
+          "finding_id": "F_ONBOARD_CHECKLIST",
+          "observer_id": "process.observer",
+          "category": "process.checklist_ambiguity",
+          "severity": "low",
+          "title": "Ambiguous onboarding checklist",
+          "observation": "The Cell D onboarding checklist assigns equipment sign-off and scanner access verification to different owners without a handoff step.",
+          "subjects": [{"entity_type": "process", "entity_id": "Cell D onboarding checklist"}],
+          "metadata": {"scope": "Cell D onboarding"}
+        }
+      ],
+      "context_finding_ids": ["F_ONBOARD_TRAINING", "F_ONBOARD_ACCESS", "F_ONBOARD_CHECKLIST"],
+      "expected_candidate_count": 1,
+      "expected_candidates": [
+        {
+          "pattern_type": "compound",
+          "required_support": ["F_ONBOARD_TRAINING", "F_ONBOARD_ACCESS", "F_ONBOARD_CHECKLIST"],
+          "expected_significance": "high",
+          "required_claims": ["training, access, and checklist Findings are distinct dimensions of Cell D onboarding friction"],
+          "forbidden_claims": ["recommendation", "single owner blame", "causality"],
+          "human_review_notes": "The broader object is Cell D onboarding; the dimensions are materially different."
+        }
+      ],
+      "human_review_focus": ["analytical_novelty", "support_correctness", "atomicity_coherence"]
+    },
+    {
+      "scenario_id": "op001_same_observer_recurring_defects",
+      "title": "Same-Observer recurring seam defects",
+      "purpose": "Confirms OP-001 does not require different Observers for recurrence.",
+      "findings": [
+        {
+          "finding_id": "F_SEAM_DEFECT_BATCH_1",
+          "observer_id": "quality.observer",
+          "category": "quality.seam_defect",
+          "severity": "medium",
+          "title": "Seam defects in batch 1",
+          "observation": "Batch Q1 showed elevated seam defects during the early shift inspection.",
+          "subjects": [{"entity_type": "product_family", "entity_id": "Q"}],
+          "metadata": {"period": "2026-09-01T06:00/10:00"}
+        },
+        {
+          "finding_id": "F_SEAM_DEFECT_BATCH_2",
+          "observer_id": "quality.observer",
+          "category": "quality.seam_defect",
+          "severity": "medium",
+          "title": "Seam defects in batch 2",
+          "observation": "Batch Q2 showed elevated seam defects during a later shift inspection.",
+          "subjects": [{"entity_type": "product_family", "entity_id": "Q"}],
+          "metadata": {"period": "2026-09-03T14:00/18:00"}
+        }
+      ],
+      "context_finding_ids": ["F_SEAM_DEFECT_BATCH_1", "F_SEAM_DEFECT_BATCH_2"],
+      "expected_candidate_count": 1,
+      "expected_candidates": [
+        {
+          "pattern_type": "recurring",
+          "required_support": ["F_SEAM_DEFECT_BATCH_1", "F_SEAM_DEFECT_BATCH_2"],
+          "expected_significance": "medium",
+          "required_claims": ["seam defects recur across two distinct inspections"],
+          "forbidden_claims": ["cause", "future batch prediction"],
+          "human_review_notes": "Recurrence is about repeated observed defect pattern, not a forecast."
+        }
+      ],
+      "human_review_focus": ["pattern_detection", "unsupported_prediction"]
+    },
+    {
+      "scenario_id": "op001_cross_domain_grounded_material_flow",
+      "title": "Cross-domain material-flow pattern",
+      "purpose": "Positive cross-domain grounded pattern with maintenance and production Findings sharing a documented cell/time scope.",
+      "findings": [
+        {
+          "finding_id": "F_FEEDER_MICROSTOPS",
+          "observer_id": "production.observer",
+          "category": "production.microstops",
+          "severity": "medium",
+          "title": "Feeder microstops clustered",
+          "observation": "Filler F7 recorded repeated feeder microstops during the wrapper changeover window.",
+          "subjects": [{"entity_type": "machine", "entity_id": "F7"}],
+          "metadata": {"period": "2026-09-18T11:00/12:00", "scope": "wrapper changeover"}
+        },
+        {
+          "finding_id": "F_WRAPPER_MAINTENANCE_DEFERRAL",
+          "observer_id": "maintenance.observer",
+          "category": "maintenance.deferred_adjustment",
+          "severity": "medium",
+          "title": "Wrapper guide adjustment deferred",
+          "observation": "The wrapper guide adjustment for the same wrapper changeover was deferred until after the noon run.",
+          "subjects": [{"entity_type": "machine", "entity_id": "W7"}],
+          "metadata": {"period": "2026-09-18T10:45/12:00", "scope": "wrapper changeover"}
+        },
+        {
+          "finding_id": "F_FINANCE_OVERTIME",
+          "observer_id": "finance.observer",
+          "category": "finance.overtime_variance",
+          "severity": "high",
+          "title": "Overtime variance on warehouse team",
+          "observation": "Warehouse overtime was above plan for the same date.",
+          "subjects": [{"entity_type": "team", "entity_id": "Warehouse"}],
+          "metadata": {"period": "2026-09-18"}
+        }
+      ],
+      "context_finding_ids": ["F_FEEDER_MICROSTOPS", "F_WRAPPER_MAINTENANCE_DEFERRAL", "F_FINANCE_OVERTIME"],
+      "expected_candidate_count": 1,
+      "expected_candidates": [
+        {
+          "pattern_type": "co_occurring",
+          "required_support": ["F_FEEDER_MICROSTOPS", "F_WRAPPER_MAINTENANCE_DEFERRAL"],
+          "forbidden_support": ["F_FINANCE_OVERTIME"],
+          "expected_significance": "medium",
+          "required_claims": ["production and maintenance Findings share the wrapper changeover scope"],
+          "forbidden_claims": ["deferred maintenance caused microstops", "finance relationship"],
+          "human_review_notes": "Cross-domain composition is allowed only because the Findings ground a shared changeover scope."
+        }
+      ],
+      "human_review_focus": ["relationship_grounding", "distractor_resistance"]
+    },
+    {
+      "scenario_id": "op001_no_pattern_single_finding",
+      "title": "Single Finding cannot form OP-001 pattern",
+      "purpose": "Zero-output case because OP-001 requires at least two distinct supporting Findings.",
+      "findings": [
+        {
+          "finding_id": "F_SINGLE_QUEUE",
+          "observer_id": "production.observer",
+          "category": "production.queue_growth",
+          "severity": "medium",
+          "title": "Queue growth at one cell",
+          "observation": "Cell B accumulated a queue during one shift.",
+          "subjects": [{"entity_type": "production_cell", "entity_id": "B"}],
+          "metadata": {"period": "2026-09-20"}
+        }
+      ],
+      "context_finding_ids": ["F_SINGLE_QUEUE"],
+      "expected_candidate_count": 0,
+      "expected_candidates": [],
+      "human_review_focus": ["zero_output_judgment"]
+    },
+    {
+      "scenario_id": "op001_no_pattern_same_month_only",
+      "title": "Same month is not relationship support",
+      "purpose": "Negative case where Findings share a broad month but no grounded relationship.",
+      "findings": [
+        {
+          "finding_id": "F_MONTH_PACKAGING",
+          "observer_id": "production.observer",
+          "category": "production.packaging_delay",
+          "severity": "medium",
+          "title": "Packaging delay",
+          "observation": "Packaging cell R had a short delay on September 4.",
+          "subjects": [{"entity_type": "production_cell", "entity_id": "R"}],
+          "metadata": {"period": "2026-09-04"}
+        },
+        {
+          "finding_id": "F_MONTH_OFFICE_ACCESS",
+          "observer_id": "access.observer",
+          "category": "access.badge_delay",
+          "severity": "medium",
+          "title": "Office badge delay",
+          "observation": "A temporary office badge was issued late on September 22.",
+          "subjects": [{"entity_type": "office", "entity_id": "North"}],
+          "metadata": {"period": "2026-09-22"}
+        }
+      ],
+      "context_finding_ids": ["F_MONTH_PACKAGING", "F_MONTH_OFFICE_ACCESS"],
+      "expected_candidate_count": 0,
+      "expected_candidates": [],
+      "human_review_focus": ["relationship_grounding", "zero_output_judgment"]
+    },
+    {
+      "scenario_id": "op001_causal_overclaim_trap",
+      "title": "Causal overclaim trap",
+      "purpose": "Grounded co-occurrence exists, but any causal explanation is forbidden.",
+      "findings": [
+        {
+          "finding_id": "F_CART_QUEUE",
+          "observer_id": "production.observer",
+          "category": "production.cart_queue",
+          "severity": "medium",
+          "title": "Cart queue near dock",
+          "observation": "Finished-goods carts queued near Dock 2 during the 10:00 outbound window.",
+          "subjects": [{"entity_type": "dock", "entity_id": "Dock 2"}],
+          "metadata": {"period": "2026-09-16T10:00/11:00", "scope": "Dock 2 outbound"}
+        },
+        {
+          "finding_id": "F_DOCK_STAGING_REWORK",
+          "observer_id": "warehouse.observer",
+          "category": "warehouse.staging_rework",
+          "severity": "medium",
+          "title": "Staging rework at Dock 2",
+          "observation": "Dock 2 staging labels were reworked during the same outbound window.",
+          "subjects": [{"entity_type": "dock", "entity_id": "Dock 2"}],
+          "metadata": {"period": "2026-09-16T10:00/11:00", "scope": "Dock 2 outbound"}
+        }
+      ],
+      "context_finding_ids": ["F_CART_QUEUE", "F_DOCK_STAGING_REWORK"],
+      "expected_candidate_count": 1,
+      "expected_candidates": [
+        {
+          "pattern_type": "co_occurring",
+          "required_support": ["F_CART_QUEUE", "F_DOCK_STAGING_REWORK"],
+          "expected_significance": "medium",
+          "required_claims": ["cart queue and staging rework are jointly present in Dock 2 outbound window"],
+          "forbidden_claims": ["cart queue was caused by staging rework", "staging rework explains cart queue"],
+          "human_review_notes": "The valid pattern is co-occurrence in a grounded window, not cause."
+        }
+      ],
+      "human_review_focus": ["unsupported_causality", "analytical_restraint"]
+    },
+    {
+      "scenario_id": "op001_predictive_prescriptive_trap",
+      "title": "Prediction and recommendation trap",
+      "purpose": "Recurring pattern may be valid, but forecast and action language are forbidden.",
+      "findings": [
+        {
+          "finding_id": "F_PICKLIST_REVISION_TUESDAY",
+          "observer_id": "warehouse.observer",
+          "category": "warehouse.picklist_revision",
+          "severity": "low",
+          "title": "Picklist revised Tuesday",
+          "observation": "The picklist for Zone 3 was revised after release on Tuesday.",
+          "subjects": [{"entity_type": "warehouse_zone", "entity_id": "Zone 3"}],
+          "metadata": {"period": "2026-09-08"}
+        },
+        {
+          "finding_id": "F_PICKLIST_REVISION_FRIDAY",
+          "observer_id": "warehouse.observer",
+          "category": "warehouse.picklist_revision",
+          "severity": "low",
+          "title": "Picklist revised Friday",
+          "observation": "The picklist for Zone 3 was revised after release on Friday.",
+          "subjects": [{"entity_type": "warehouse_zone", "entity_id": "Zone 3"}],
+          "metadata": {"period": "2026-09-11"}
+        }
+      ],
+      "context_finding_ids": ["F_PICKLIST_REVISION_TUESDAY", "F_PICKLIST_REVISION_FRIDAY"],
+      "expected_candidate_count": 1,
+      "expected_candidates": [
+        {
+          "pattern_type": "recurring",
+          "required_support": ["F_PICKLIST_REVISION_TUESDAY", "F_PICKLIST_REVISION_FRIDAY"],
+          "expected_significance": "low",
+          "required_claims": ["picklist revisions recur for Zone 3 across two days"],
+          "forbidden_claims": ["will happen again", "should change the release process", "recommendation"],
+          "human_review_notes": "The pattern is local and low significance despite recurrence."
+        }
+      ],
+      "human_review_focus": ["unsupported_prediction", "unsupported_prescription", "significance_calibration"]
+    },
+    {
+      "scenario_id": "op001_high_severity_unrelated_distractor",
+      "title": "High severity does not imply relevance",
+      "purpose": "Tests that a severe unrelated Finding is not included as support.",
+      "findings": [
+        {
+          "finding_id": "F_TOOLING_SHORTAGE",
+          "observer_id": "maintenance.observer",
+          "category": "maintenance.tooling_shortage",
+          "severity": "medium",
+          "title": "Tooling shortage",
+          "observation": "Cell K lacked the verified setup gauge at start of shift.",
+          "subjects": [{"entity_type": "production_cell", "entity_id": "K"}],
+          "metadata": {"scope": "Cell K setup"}
+        },
+        {
+          "finding_id": "F_SETUP_INSTRUCTION_GAP",
+          "observer_id": "process.observer",
+          "category": "process.instruction_gap",
+          "severity": "medium",
+          "title": "Setup instruction missing gauge step",
+          "observation": "The Cell K setup instruction omits the verification gauge step.",
+          "subjects": [{"entity_type": "production_cell", "entity_id": "K"}],
+          "metadata": {"scope": "Cell K setup"}
+        },
+        {
+          "finding_id": "F_FIRE_ALARM_TEST_FAILURE",
+          "observer_id": "safety.observer",
+          "category": "safety.alarm_test_failure",
+          "severity": "high",
+          "title": "Alarm test failure",
+          "observation": "A fire alarm test failed in the administrative building.",
+          "subjects": [{"entity_type": "building", "entity_id": "Admin"}],
+          "metadata": {"scope": "Admin safety"}
+        }
+      ],
+      "context_finding_ids": ["F_TOOLING_SHORTAGE", "F_SETUP_INSTRUCTION_GAP", "F_FIRE_ALARM_TEST_FAILURE"],
+      "expected_candidate_count": 1,
+      "expected_candidates": [
+        {
+          "pattern_type": "compound",
+          "required_support": ["F_TOOLING_SHORTAGE", "F_SETUP_INSTRUCTION_GAP"],
+          "forbidden_support": ["F_FIRE_ALARM_TEST_FAILURE"],
+          "expected_significance": "medium",
+          "required_claims": ["Cell K setup has material/tooling and instruction dimensions"],
+          "forbidden_claims": ["safety alarm relationship", "severity-based support"],
+          "human_review_notes": "Severity is not relevance; the high-severity safety Finding is a distractor."
+        }
+      ],
+      "human_review_focus": ["support_minimality", "distractor_resistance"]
+    },
+    {
+      "scenario_id": "op001_support_minimality",
+      "title": "Minimal support excludes interesting context",
+      "purpose": "Positive pattern where an additional related-looking Finding should not be included.",
+      "findings": [
+        {
+          "finding_id": "F_LINE_B_CHANGEOVER_DELAY",
+          "observer_id": "production.observer",
+          "category": "production.changeover_delay",
+          "severity": "medium",
+          "title": "Line B changeover delay",
+          "observation": "Line B changeover exceeded its planned duration during the blue-label product switch.",
+          "subjects": [{"entity_type": "production_line", "entity_id": "Line B"}],
+          "metadata": {"scope": "blue-label switch"}
+        },
+        {
+          "finding_id": "F_LINE_B_LABEL_APPROVAL",
+          "observer_id": "quality.observer",
+          "category": "quality.label_approval_wait",
+          "severity": "medium",
+          "title": "Label approval wait",
+          "observation": "The blue-label switch waited for label approval before release on Line B.",
+          "subjects": [{"entity_type": "production_line", "entity_id": "Line B"}],
+          "metadata": {"scope": "blue-label switch"}
+        },
+        {
+          "finding_id": "F_LINE_B_GENERAL_BACKLOG",
+          "observer_id": "planning.observer",
+          "category": "planning.backlog",
+          "severity": "medium",
+          "title": "General Line B backlog",
+          "observation": "Line B had a general weekly backlog across several product families.",
+          "subjects": [{"entity_type": "production_line", "entity_id": "Line B"}],
+          "metadata": {"scope": "weekly backlog"}
+        }
+      ],
+      "context_finding_ids": ["F_LINE_B_CHANGEOVER_DELAY", "F_LINE_B_LABEL_APPROVAL", "F_LINE_B_GENERAL_BACKLOG"],
+      "expected_candidate_count": 1,
+      "expected_candidates": [
+        {
+          "pattern_type": "co_occurring",
+          "required_support": ["F_LINE_B_CHANGEOVER_DELAY", "F_LINE_B_LABEL_APPROVAL"],
+          "forbidden_support": ["F_LINE_B_GENERAL_BACKLOG"],
+          "expected_significance": "medium",
+          "required_claims": ["blue-label switch links the changeover delay and label approval wait"],
+          "forbidden_claims": ["weekly backlog as support", "general Line B relationship"],
+          "human_review_notes": "The backlog is interesting but not minimal support for the blue-label switch pattern."
+        }
+      ],
+      "human_review_focus": ["support_minimality"]
+    },
+    {
+      "scenario_id": "op001_low_significance_local_pattern",
+      "title": "Low-significance local pattern",
+      "purpose": "Tests significance as materiality of the new pattern, not support count or severity.",
+      "findings": [
+        {
+          "finding_id": "F_LOCAL_FORM_MISSING_FIELD",
+          "observer_id": "admin.observer",
+          "category": "admin.form_gap",
+          "severity": "low",
+          "title": "Local form missing optional field",
+          "observation": "A local shift form for Team L omitted an optional comment field.",
+          "subjects": [{"entity_type": "team", "entity_id": "Team L"}],
+          "metadata": {"scope": "Team L shift form"}
+        },
+        {
+          "finding_id": "F_LOCAL_FORM_REWORK",
+          "observer_id": "admin.observer",
+          "category": "admin.form_rework",
+          "severity": "low",
+          "title": "Local form rework",
+          "observation": "Team L manually added the optional comment field to two local shift forms.",
+          "subjects": [{"entity_type": "team", "entity_id": "Team L"}],
+          "metadata": {"scope": "Team L shift form"}
+        }
+      ],
+      "context_finding_ids": ["F_LOCAL_FORM_MISSING_FIELD", "F_LOCAL_FORM_REWORK"],
+      "expected_candidate_count": 1,
+      "expected_candidates": [
+        {
+          "pattern_type": "compound",
+          "required_support": ["F_LOCAL_FORM_MISSING_FIELD", "F_LOCAL_FORM_REWORK"],
+          "expected_significance": "low",
+          "required_claims": ["local Team L form design and manual rework are related dimensions"],
+          "forbidden_claims": ["high significance", "organization-wide claim"],
+          "human_review_notes": "The pattern is valid but local and limited."
+        }
+      ],
+      "human_review_focus": ["significance_calibration", "unsupported_generalization"]
+    },
+    {
+      "scenario_id": "op001_unsupported_generalization_trap",
+      "title": "Scoped recurrence, no plant-wide generalization",
+      "purpose": "Positive recurring pattern that must remain scoped to the observed cells.",
+      "findings": [
+        {
+          "finding_id": "F_CELL_E_BRIEFING_DELAY",
+          "observer_id": "operations.observer",
+          "category": "operations.briefing_delay",
+          "severity": "medium",
+          "title": "Briefing delay at Cell E",
+          "observation": "Cell E started briefing 18 minutes late on Monday.",
+          "subjects": [{"entity_type": "production_cell", "entity_id": "E"}],
+          "metadata": {"period": "2026-09-14"}
+        },
+        {
+          "finding_id": "F_CELL_F_BRIEFING_DELAY",
+          "observer_id": "operations.observer",
+          "category": "operations.briefing_delay",
+          "severity": "medium",
+          "title": "Briefing delay at Cell F",
+          "observation": "Cell F started briefing 15 minutes late on Wednesday.",
+          "subjects": [{"entity_type": "production_cell", "entity_id": "F"}],
+          "metadata": {"period": "2026-09-16"}
+        }
+      ],
+      "context_finding_ids": ["F_CELL_E_BRIEFING_DELAY", "F_CELL_F_BRIEFING_DELAY"],
+      "expected_candidate_count": 1,
+      "expected_candidates": [
+        {
+          "pattern_type": "recurring",
+          "required_support": ["F_CELL_E_BRIEFING_DELAY", "F_CELL_F_BRIEFING_DELAY"],
+          "expected_significance": "medium",
+          "required_claims": ["briefing delays recur across two observed cells"],
+          "forbidden_claims": ["plant-wide briefing problem", "all cells affected", "systemic workforce issue"],
+          "human_review_notes": "The valid claim is broader than one Finding but must stay limited to the two observed occurrences."
+        }
+      ],
+      "human_review_focus": ["unsupported_generalization", "analytical_restraint"]
+    },
+    {
+      "scenario_id": "op001_duplicate_pattern_behavior",
+      "title": "One coherent pattern should be one Candidate",
+      "purpose": "Fixture for structural duplicate detection when two candidates use the same pattern type and support set.",
+      "findings": [
+        {
+          "finding_id": "F_RECIPE_OVERRIDE_DAY_1",
+          "observer_id": "process.observer",
+          "category": "process.recipe_override",
+          "severity": "medium",
+          "title": "Recipe override day 1",
+          "observation": "Cell N used a manual recipe override during the Tuesday short run.",
+          "subjects": [{"entity_type": "production_cell", "entity_id": "N"}],
+          "metadata": {"period": "2026-09-15"}
+        },
+        {
+          "finding_id": "F_RECIPE_OVERRIDE_DAY_2",
+          "observer_id": "process.observer",
+          "category": "process.recipe_override",
+          "severity": "medium",
+          "title": "Recipe override day 2",
+          "observation": "Cell N used a manual recipe override again during the Thursday short run.",
+          "subjects": [{"entity_type": "production_cell", "entity_id": "N"}],
+          "metadata": {"period": "2026-09-17"}
+        }
+      ],
+      "context_finding_ids": ["F_RECIPE_OVERRIDE_DAY_1", "F_RECIPE_OVERRIDE_DAY_2"],
+      "expected_candidate_count": 1,
+      "expected_candidates": [
+        {
+          "pattern_type": "recurring",
+          "required_support": ["F_RECIPE_OVERRIDE_DAY_1", "F_RECIPE_OVERRIDE_DAY_2"],
+          "expected_significance": "medium",
+          "required_claims": ["manual recipe override recurs for Cell N across two short runs"],
+          "forbidden_claims": ["two duplicate candidates for the same pattern"],
+          "human_review_notes": "The deterministic evaluator can flag duplicate pattern_type/support-set duplicates when provided."
+        }
+      ],
+      "disallow_duplicate_support_sets": true,
+      "human_review_focus": ["duplicate_pattern_behavior", "atomicity_coherence"]
+    },
+    {
+      "scenario_id": "op001_same_domain_not_enough",
+      "title": "Same domain alone is not support",
+      "purpose": "Negative case where two production Findings are not analytically related by domain alone.",
+      "findings": [
+        {
+          "finding_id": "F_PROD_CELL_A_LABELER",
+          "observer_id": "production.observer",
+          "category": "production.labeler_pause",
+          "severity": "medium",
+          "title": "Labeler pause at Cell A",
+          "observation": "Cell A labeler paused for seven minutes during a morning batch.",
+          "subjects": [{"entity_type": "production_cell", "entity_id": "A"}],
+          "metadata": {"period": "2026-09-21T08:00/09:00"}
+        },
+        {
+          "finding_id": "F_PROD_CELL_Z_CASE_COUNT",
+          "observer_id": "production.observer",
+          "category": "production.case_count_variance",
+          "severity": "medium",
+          "title": "Case count variance at Cell Z",
+          "observation": "Cell Z reported a small case-count variance during an unrelated evening batch.",
+          "subjects": [{"entity_type": "production_cell", "entity_id": "Z"}],
+          "metadata": {"period": "2026-09-21T18:00/19:00"}
+        }
+      ],
+      "context_finding_ids": ["F_PROD_CELL_A_LABELER", "F_PROD_CELL_Z_CASE_COUNT"],
+      "expected_candidate_count": 0,
+      "expected_candidates": [],
+      "human_review_focus": ["relationship_grounding", "zero_output_judgment"]
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "schema": "kci.benchmark.expected_outcomes",
+  "schema_version": "1.0",
+  "scenarios": [
+    {
+      "dataset_file": "datasets/synthetic/unexplained_downtime.json",
+      "expected_findings": [
+        {
+          "category": "production.unexplained_downtime",
+          "evidence_refs": [
+            "event:unexplained:stop-001",
+            "event:unexplained:stop-002"
+          ]
+        }
+      ]
+    },
+    {
+      "dataset_file": "datasets/synthetic/normal_shift.json",
+      "expected_findings": []
+    },
+    {
+      "dataset_file": "datasets/synthetic/nothing_interesting.json",
+      "expected_findings": []
+    }
+  ]
+}

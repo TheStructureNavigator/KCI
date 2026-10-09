@@ -1,0 +1,41 @@
+{
+  "schema": "kci.dataset_envelope",
+  "schema_version": "1",
+  "dataset": "synthetic.production.shift",
+  "dataset_version": 1,
+  "snapshot_id": "bad-oee-001",
+  "generated_at": "2026-10-04T08:00:00Z",
+  "content_hash": "sha256:643145525d92ecd2ec1e1b495fe70eef9b12aa107b3ea65e07a06ccac39332ff",
+  "period": {
+    "start": "2026-10-04T00:00:00Z",
+    "end": "2026-10-04T08:00:00Z"
+  },
+  "scope": {
+    "site": "fictional-home-lab",
+    "machine": "M-FICTION-02",
+    "shift": "B"
+  },
+  "evidence_records": [
+    {
+      "ref": "event:bad-oee:material-wait",
+      "data": {
+        "category": "material",
+        "duration_minutes": 42
+      }
+    }
+  ],
+  "data": {
+    "summary": {
+      "entity_ref": "summary:bad-oee-001",
+      "oee": 0.58,
+      "status": "underperforming"
+    },
+    "downtime_events": [
+      {
+        "evidence_ref": "event:bad-oee:material-wait",
+        "category": "material",
+        "duration_minutes": 42
+      }
+    ]
+  }
+}

@@ -1,0 +1,53 @@
+{
+  "schema": "kci.dataset_envelope",
+  "schema_version": "1",
+  "dataset": "synthetic.production.shift",
+  "dataset_version": 1,
+  "snapshot_id": "unexplained-downtime-001",
+  "generated_at": "2026-10-04T08:00:00Z",
+  "content_hash": "sha256:fb822099aa7190bdba9e7f199546dfa38fb2624cec0f2251aaa6bb72a6703ac5",
+  "period": {
+    "start": "2026-10-04T00:00:00Z",
+    "end": "2026-10-04T08:00:00Z"
+  },
+  "scope": {
+    "site": "fictional-home-lab",
+    "machine": "M-FICTION-03",
+    "shift": "C"
+  },
+  "evidence_records": [
+    {
+      "ref": "event:unexplained:stop-001",
+      "data": {
+        "category": "unexplained",
+        "duration_minutes": 18
+      }
+    },
+    {
+      "ref": "event:unexplained:stop-002",
+      "data": {
+        "category": "unexplained",
+        "duration_minutes": 20
+      }
+    }
+  ],
+  "data": {
+    "summary": {
+      "entity_ref": "summary:unexplained-downtime-001",
+      "oee": 0.71,
+      "status": "review"
+    },
+    "downtime_events": [
+      {
+        "evidence_ref": "event:unexplained:stop-001",
+        "category": "unexplained",
+        "duration_minutes": 18
+      },
+      {
+        "evidence_ref": "event:unexplained:stop-002",
+        "category": "unexplained",
+        "duration_minutes": 20
+      }
+    ]
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "schema": "kci.dataset_envelope",
+  "schema_version": "1",
+  "dataset": "synthetic.production.shift",
+  "dataset_version": 1,
+  "snapshot_id": "nothing-interesting-001",
+  "generated_at": "2026-10-04T08:00:00Z",
+  "content_hash": "sha256:934025c6acd684164fa23e44d27c6e96b971a4e62e3cef8e606d9b96a143691c",
+  "period": {
+    "start": "2026-10-04T00:00:00Z",
+    "end": "2026-10-04T08:00:00Z"
+  },
+  "scope": {
+    "site": "fictional-home-lab",
+    "machine": "M-FICTION-06",
+    "shift": "C"
+  },
+  "evidence_records": [],
+  "data": {
+    "summary": {
+      "entity_ref": "summary:nothing-interesting-001",
+      "oee": 0.91,
+      "status": "normal"
+    },
+    "downtime_events": []
+  }
+}

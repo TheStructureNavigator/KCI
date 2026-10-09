@@ -1,0 +1,53 @@
+{
+  "schema": "kci.dataset_envelope",
+  "schema_version": "1",
+  "dataset": "synthetic.production.shift",
+  "dataset_version": 1,
+  "snapshot_id": "mixed-problem-001",
+  "generated_at": "2026-10-04T08:00:00Z",
+  "content_hash": "sha256:3551e85d11350ef6f17d66c599ec85882e1bdde92a549270978a0bb991d9448e",
+  "period": {
+    "start": "2026-10-04T00:00:00Z",
+    "end": "2026-10-04T08:00:00Z"
+  },
+  "scope": {
+    "site": "fictional-home-lab",
+    "machine": "M-FICTION-05",
+    "shift": "B"
+  },
+  "evidence_records": [
+    {
+      "ref": "event:mixed:setup-delay",
+      "data": {
+        "category": "setup",
+        "duration_minutes": 24
+      }
+    },
+    {
+      "ref": "event:mixed:unexplained-001",
+      "data": {
+        "category": "unexplained",
+        "duration_minutes": 35
+      }
+    }
+  ],
+  "data": {
+    "summary": {
+      "entity_ref": "summary:mixed-problem-001",
+      "oee": 0.62,
+      "status": "review"
+    },
+    "downtime_events": [
+      {
+        "evidence_ref": "event:mixed:setup-delay",
+        "category": "setup",
+        "duration_minutes": 24
+      },
+      {
+        "evidence_ref": "event:mixed:unexplained-001",
+        "category": "unexplained",
+        "duration_minutes": 35
+      }
+    ]
+  }
+}
