@@ -1,6 +1,7 @@
 from kci.operations.base import IntelligenceOperation, OperationConfiguration, OperationConfigurationError
 from kci.operations.uatu_op001 import (
     OP001_CATEGORY,
+    OP001_INSTRUCTIONS,
     OP001_OPERATION_ID,
     OP001_OPERATION_VERSION,
     Op001CandidateConversionResult,
@@ -13,6 +14,7 @@ from kci.operations.uatu_op001 import (
     Op001ModelOutputRejection,
     Op001ModelPattern,
     Op001ModelResponse,
+    Op001ParsedResponse,
     Op001ModelSubject,
     convert_op001_model_response,
     invoke_op001_model_boundary,
@@ -26,6 +28,7 @@ __all__ = [
     "OperationConfiguration",
     "OperationConfigurationError",
     "OP001_CATEGORY",
+    "OP001_INSTRUCTIONS",
     "OP001_OPERATION_ID",
     "OP001_OPERATION_VERSION",
     "Op001CandidateConversionResult",
@@ -38,6 +41,7 @@ __all__ = [
     "Op001ModelOutputRejection",
     "Op001ModelPattern",
     "Op001ModelResponse",
+    "Op001ParsedResponse",
     "Op001ModelSubject",
     "convert_op001_model_response",
     "invoke_op001_model_boundary",

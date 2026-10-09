@@ -11,6 +11,7 @@ from kci.contracts import EntityReference, EvidenceReference, Finding, Intellige
 from kci.models import ModelProvider
 from kci.operations import (
     OP001_CATEGORY,
+    OP001_INSTRUCTIONS,
     Op001MalformedModelResponse,
     Op001ModelAssistedOperation,
     Op001ModelPattern,
@@ -178,19 +179,39 @@ def test_output_schema_accepts_valid_empty_and_valid_pattern_responses() -> None
 @pytest.mark.parametrize(
     "payload",
     [
-        {"patterns": [raw_pattern(pattern_type="causal")]},
-        {"patterns": [raw_pattern(significance="urgent")]},
-        {"patterns": [raw_pattern(support=["F_A"])]},
-        {"patterns": [raw_pattern(support=["F_A", "F_A"])]},
-        {"patterns": [{"pattern_type": "co_occurring"}]},
-        {"patterns": [raw_pattern(extra_field="nope")]},
-        {"patterns": [raw_pattern(subjects=[{"entity_type": "machine", "entity_id": "M14", "label": "extra"}])]},
-        {"patterns": [], "status": "ok"},
+        {"patterns": [], "status": "ok"},  # forbidden top-level field
+        {"status": "ok"},  # missing patterns
+        {"patterns": "none"},  # patterns is not a list
+        {"patterns": {"pattern_type": "co_occurring"}},
+        [raw_pattern()],  # wrong top-level shape
+        "not an object",
     ],
 )
-def test_strict_untrusted_output_schema_rejects_invalid_shapes(payload) -> None:
+def test_malformed_top_level_responses_fail_the_whole_response(payload) -> None:
     with pytest.raises(Op001MalformedModelResponse):
         parse_op001_model_response(payload)
+
+
+@pytest.mark.parametrize(
+    "bad_pattern",
+    [
+        raw_pattern(pattern_type="causal"),
+        raw_pattern(significance="urgent"),
+        raw_pattern(support=["F_A"]),
+        raw_pattern(support=["F_A", "F_A"]),
+        {"pattern_type": "co_occurring"},
+        raw_pattern(extra_field="nope"),
+        raw_pattern(subjects=[{"entity_type": "machine", "entity_id": "M14", "label": "extra"}]),
+        "not even an object",
+    ],
+)
+def test_invalid_individual_patterns_are_rejected_without_discarding_valid_siblings(bad_pattern) -> None:
+    parsed = parse_op001_model_response({"patterns": [raw_pattern(), bad_pattern, raw_pattern(support=["F_B", "F_C"])]})
+
+    assert [rejection.pattern_index for rejection in parsed.rejections] == [1]
+    assert parsed.rejections[0].failure_category == "schema"
+    assert parsed.pattern_indices == [0, 2]
+    assert len(parsed.patterns) == 2 and parsed.received == 3
 
 
 def test_model_pattern_schema_is_private_not_insight_candidate() -> None:
@@ -347,7 +368,7 @@ def test_operation_projects_input_and_converts_valid_model_output_through_runtim
     assert result.run.promoted_count == 1
     assert result.run.model_runs_count == 1
     assert provider.calls == 1
-    assert provider.last_task == "uatu.cross_finding_pattern_synthesis"
+    assert provider.last_task == OP001_INSTRUCTIONS  # operation-owned instructions travel as the generic task
     assert [finding["finding_id"] for finding in provider.last_context["findings"]] == ["F_A", "F_B", "F_C"]
     # Inference parameters come from operation construction and are passed to the provider ...
     assert provider.last_inference_parameters == {"max_output_tokens": 512, "temperature": 0}
