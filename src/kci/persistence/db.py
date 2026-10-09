@@ -58,6 +58,28 @@ CREATE TABLE IF NOT EXISTS model_runs (
     )
 );
 
+CREATE TABLE IF NOT EXISTS observation_contexts (
+    context_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS observation_context_datasets (
+    context_id TEXT NOT NULL,
+    dataset TEXT NOT NULL,
+    dataset_version INTEGER NOT NULL,
+    snapshot_id TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    PRIMARY KEY (context_id, dataset),
+    UNIQUE (context_id, snapshot_id),
+    FOREIGN KEY (context_id) REFERENCES observation_contexts(context_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_observation_context_datasets_snapshot
+    ON observation_context_datasets (snapshot_id, dataset);
+
+CREATE INDEX IF NOT EXISTS idx_observer_runs_context_id
+    ON observer_runs (context_id);
+
 CREATE TABLE IF NOT EXISTS findings (
     finding_id TEXT PRIMARY KEY,
     observer_run_id TEXT NOT NULL,
