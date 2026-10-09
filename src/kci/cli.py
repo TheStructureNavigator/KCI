@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
-from kci.contracts import DatasetEnvelope, ObservationContext
+from kci.contracts import DatasetEnvelope, ObservationContext, SnapshotIntegrityError
 from kci.observers.production import ProductionObserver
 from kci.persistence import KciRepository, connect, initialize_database
 from kci.runtime import run_observer
@@ -33,12 +34,18 @@ def main(argv: list[str] | None = None) -> int:
     repository = KciRepository(connection)
 
     observer = ProductionObserver()
-    result = run_observer(
-        observer,
-        context,
-        repository,
-        requested_configuration={"threshold_minutes": args.threshold_minutes},
-    )
+    try:
+        result = run_observer(
+            observer,
+            context,
+            repository,
+            requested_configuration={"threshold_minutes": args.threshold_minutes},
+        )
+    except SnapshotIntegrityError as exc:
+        # The execution was rejected before any work and nothing was recorded. The message
+        # names snapshot identities and hashes only, never dataset content.
+        print(f"error: snapshot integrity conflict, execution rejected and not recorded: {exc}", file=sys.stderr)
+        return 2
 
     print(f"observer: {result.run.observer_id}@{result.run.observer_version}")
     print(f"snapshot: {result.run.dataset}/{result.run.snapshot_id}")

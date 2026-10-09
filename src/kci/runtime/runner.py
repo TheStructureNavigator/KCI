@@ -25,6 +25,12 @@ def run_observer(
     repository: KciRepository | None = None,
     requested_configuration: dict[str, Any] | None = None,
 ) -> ObserverExecutionResult:
+    manifest = context.manifest()
+    if repository is not None:
+        # Fail fast, before any work, if recording this input would conflict with recorded snapshots.
+        repository.ensure_snapshot_consistency(manifest)
+    # Legacy convenience fields only (Contract 002.2): "first as supplied", NOT canonical provenance.
+    # The authoritative input record is the manifest keyed by context_id.
     primary_dataset = context.datasets[0]
     effective_configuration: dict[str, Any] = {}
     try:
@@ -67,9 +73,8 @@ def run_observer(
         run.duration_ms = (perf_counter() - started) * 1000
 
     if repository is not None:
-        repository.save_observer_run(run)
-        for finding in findings:
-            repository.save_finding(run.run_id, finding)
+        # Manifest, run and Findings are recorded atomically; also for requirements_failed runs.
+        repository.record_observer_execution(run, manifest, findings)
 
     return ObserverExecutionResult(run=run, findings=findings, validation_failures=failures)
 

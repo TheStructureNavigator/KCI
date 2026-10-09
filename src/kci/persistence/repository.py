@@ -2,8 +2,25 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
+from datetime import datetime, timezone
 
-from kci.contracts import EntityReference, EvidenceReference, Finding, Insight, IntelligenceContext, IntelligenceRun, ModelRun, ObserverRun
+from kci.contracts import (
+    DatasetReference,
+    EntityReference,
+    EvidenceReference,
+    Finding,
+    Insight,
+    IntelligenceContext,
+    IntelligenceRun,
+    ModelRun,
+    ObservationContextIntegrityError,
+    ObservationContextManifest,
+    ObserverRun,
+    SnapshotIntegrityError,
+    UnknownObservationContext,
+)
 
 
 def canonical_json(value: object) -> str:
@@ -14,7 +31,26 @@ class KciRepository:
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.connection = connection
 
+    @contextmanager
+    def _atomic(self) -> Iterator[None]:
+        """One all-or-nothing write transaction (BEGIN IMMEDIATE takes the write lock up front).
+
+        If the caller already opened a transaction it is joined and finished by this block.
+        """
+        if not self.connection.in_transaction:
+            self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+        except BaseException:
+            self.connection.rollback()
+            raise
+        self.connection.commit()
+
     def save_observer_run(self, run: ObserverRun) -> None:
+        self._insert_observer_run(run)
+        self.connection.commit()
+
+    def _insert_observer_run(self, run: ObserverRun) -> None:
         self.connection.execute(
             """
             INSERT INTO observer_runs (
@@ -43,7 +79,6 @@ class KciRepository:
                 run.error,
             ),
         )
-        self.connection.commit()
 
     def save_model_run(self, model_run: ModelRun) -> None:
         self.connection.execute(
@@ -156,45 +191,179 @@ class KciRepository:
         self.connection.commit()
 
     def save_finding(self, observer_run_id: str, finding: Finding) -> None:
+        with self.connection:
+            self._insert_finding(observer_run_id, finding)
+
+    def _insert_finding(self, observer_run_id: str, finding: Finding) -> None:
         if finding.observer_run_id != observer_run_id:
             raise ValueError("finding observer_run_id does not match target ObserverRun")
-        with self.connection:
+        self.connection.execute(
+            """
+            INSERT INTO findings (
+                finding_id, observer_run_id, observer_id, observer_version, category, severity,
+                title, observation, created_at, metadata_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                finding.finding_id,
+                finding.observer_run_id,
+                finding.observer_id,
+                finding.observer_version,
+                finding.category,
+                finding.severity,
+                finding.title,
+                finding.observation,
+                finding.created_at.isoformat(),
+                json.dumps(finding.metadata, sort_keys=True),
+            ),
+        )
+        for subject in finding.subjects:
             self.connection.execute(
                 """
-                INSERT INTO findings (
-                    finding_id, observer_run_id, observer_id, observer_version, category, severity,
-                    title, observation, created_at, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO finding_subjects (finding_id, entity_type, entity_id)
+                VALUES (?, ?, ?)
+                """,
+                (finding.finding_id, subject.entity_type, subject.entity_id),
+            )
+        for evidence in finding.evidence:
+            self.connection.execute(
+                """
+                INSERT INTO evidence (finding_id, dataset, snapshot_id, ref)
+                VALUES (?, ?, ?, ?)
+                """,
+                (finding.finding_id, evidence.dataset, evidence.snapshot_id, evidence.ref),
+            )
+
+    # --- observation context manifests (Contract 002.2 / 002.8 / 002.9) -------------------------
+
+    def ensure_snapshot_consistency(self, manifest: ObservationContextManifest) -> None:
+        """Read-only fail-fast check; raises if recording this manifest would be inconsistent."""
+        self._check_manifest(manifest)
+
+    def save_observation_context(self, manifest: ObservationContextManifest) -> None:
+        """Idempotently record a manifest. Conflicting membership is never silently ignored."""
+        with self._atomic():
+            self._insert_observation_context(manifest)
+
+    def get_observation_context(self, context_id: str) -> ObservationContextManifest | UnknownObservationContext:
+        """Reconstruct the recorded dataset reference set and verify it against ``context_id``.
+
+        A missing manifest (for example a legacy ObserverRun) is reported explicitly as
+        ``UnknownObservationContext``; nothing is guessed or backfilled.
+        """
+        recorded = self.connection.execute(
+            "SELECT 1 FROM observation_contexts WHERE context_id = ?", (context_id,)
+        ).fetchone()
+        if recorded is None:
+            orphaned = self.connection.execute(
+                "SELECT 1 FROM observation_context_datasets WHERE context_id = ? LIMIT 1", (context_id,)
+            ).fetchone()
+            if orphaned is not None:
+                # Membership without its context row is corruption, not a legacy run.
+                raise ObservationContextIntegrityError(
+                    f"membership rows exist for {context_id} but its context record is missing"
+                )
+            return UnknownObservationContext(context_id)
+        try:
+            manifest = ObservationContextManifest(references=self._recorded_references(context_id))
+        except ValueError:
+            raise ObservationContextIntegrityError(
+                f"recorded manifest for {context_id} is not a valid dataset reference set"
+            ) from None
+        if manifest.context_id != context_id:
+            raise ObservationContextIntegrityError(
+                f"recorded manifest for {context_id} hashes to {manifest.context_id}"
+            )
+        return manifest
+
+    def get_observation_context_for_run(self, run_id: str) -> ObservationContextManifest | UnknownObservationContext:
+        row = self.connection.execute("SELECT context_id FROM observer_runs WHERE run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise LookupError(f"unknown ObserverRun: {run_id}")
+        return self.get_observation_context(row["context_id"])
+
+    def record_observer_execution(
+        self,
+        run: ObserverRun,
+        manifest: ObservationContextManifest,
+        findings: Sequence[Finding] = (),
+    ) -> None:
+        """Record manifest, ObserverRun and its Findings in one transaction (all or nothing)."""
+        if run.context_id != manifest.context_id:
+            raise ObservationContextIntegrityError("ObserverRun.context_id does not match the manifest")
+        with self._atomic():
+            self._insert_observation_context(manifest)
+            self._insert_observer_run(run)
+            for finding in findings:
+                self._insert_finding(run.run_id, finding)
+
+    def _recorded_references(self, context_id: str) -> tuple[DatasetReference, ...]:
+        rows = self.connection.execute(
+            """
+            SELECT dataset, dataset_version, snapshot_id, content_hash
+            FROM observation_context_datasets
+            WHERE context_id = ?
+            ORDER BY dataset
+            """,
+            (context_id,),
+        ).fetchall()
+        return tuple(DatasetReference(**dict(row)) for row in rows)
+
+    def _check_manifest(self, manifest: ObservationContextManifest) -> bool:
+        """Return True if this exact manifest is already recorded; raise on any inconsistency."""
+        context_id = manifest.context_id
+        exists = self.connection.execute(
+            "SELECT 1 FROM observation_contexts WHERE context_id = ?", (context_id,)
+        ).fetchone()
+        if exists is not None:
+            try:
+                recorded = set(self._recorded_references(context_id))
+            except ValueError:
+                raise ObservationContextIntegrityError(f"recorded manifest for {context_id} is unreadable") from None
+            if recorded != set(manifest.references):
+                raise ObservationContextIntegrityError(
+                    f"recorded membership for {context_id} differs from the supplied manifest"
+                )
+            return True
+        for reference in manifest.references:
+            for row in self.connection.execute(
+                """
+                SELECT DISTINCT dataset, dataset_version, content_hash
+                FROM observation_context_datasets
+                WHERE snapshot_id = ?
+                """,
+                (reference.snapshot_id,),
+            ):
+                recorded_identity = (row["dataset"], row["dataset_version"], row["content_hash"])
+                if recorded_identity != (reference.dataset, reference.dataset_version, reference.content_hash):
+                    raise SnapshotIntegrityError(
+                        f"snapshot_id {reference.snapshot_id!r} is already recorded as "
+                        f"{row['dataset']} v{row['dataset_version']} {row['content_hash']}, which conflicts with "
+                        f"{reference.dataset} v{reference.dataset_version} {reference.content_hash}"
+                    )
+        return False
+
+    def _insert_observation_context(self, manifest: ObservationContextManifest) -> None:
+        if self._check_manifest(manifest):
+            return  # identical manifest already recorded: idempotent
+        self.connection.execute(
+            "INSERT INTO observation_contexts (context_id, created_at) VALUES (?, ?)",
+            (manifest.context_id, datetime.now(timezone.utc).isoformat()),
+        )
+        for reference in manifest.references:
+            self.connection.execute(
+                """
+                INSERT INTO observation_context_datasets (context_id, dataset, dataset_version, snapshot_id, content_hash)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 (
-                    finding.finding_id,
-                    finding.observer_run_id,
-                    finding.observer_id,
-                    finding.observer_version,
-                    finding.category,
-                    finding.severity,
-                    finding.title,
-                    finding.observation,
-                    finding.created_at.isoformat(),
-                    json.dumps(finding.metadata, sort_keys=True),
+                    manifest.context_id,
+                    reference.dataset,
+                    reference.dataset_version,
+                    reference.snapshot_id,
+                    reference.content_hash,
                 ),
             )
-            for subject in finding.subjects:
-                self.connection.execute(
-                    """
-                    INSERT INTO finding_subjects (finding_id, entity_type, entity_id)
-                    VALUES (?, ?, ?)
-                    """,
-                    (finding.finding_id, subject.entity_type, subject.entity_id),
-                )
-            for evidence in finding.evidence:
-                self.connection.execute(
-                    """
-                    INSERT INTO evidence (finding_id, dataset, snapshot_id, ref)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (finding.finding_id, evidence.dataset, evidence.snapshot_id, evidence.ref),
-                )
 
     def list_findings(self) -> list[Finding]:
         rows = self.connection.execute("SELECT * FROM findings ORDER BY created_at").fetchall()
