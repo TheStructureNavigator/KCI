@@ -10,7 +10,10 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal, Protocol
 
-from kci.models.base import GenerationText, InvocationTelemetry, ModelProvider
+from pydantic import ValidationError
+
+from kci.error_hygiene import safe_key_names, trusted_message_type
+from kci.models.base import GenerationText, InferenceParameters, InvocationTelemetry, ModelProvider
 
 
 LlamaCppFailureCategory = Literal[
@@ -22,7 +25,10 @@ LlamaCppFailureCategory = Literal[
 ]
 
 
+@trusted_message_type
 class LlamaCppCliProviderError(RuntimeError):
+    # Registered for persistence by exact type. Every raise site in this module uses fixed text
+    # plus sanitized parameter names (no paths, values or OS error text); keep it that way.
     def __init__(
         self,
         category: LlamaCppFailureCategory,
@@ -71,15 +77,11 @@ class _ProcessRunner(Protocol):
 class LlamaCppCliProvider(ModelProvider):
     provider_name = "llama_cpp_cli"
     runtime_version = "unknown"
-    supported_inference_parameters = {
-        "temperature",
-        "top_p",
-        "max_output_tokens",
-        "seed",
-        "threads",
-        "ctx_size",
-        "gpu_layers",
-    }
+    # Generation parameters an operation may request per call.
+    per_call_inference_parameters = frozenset({"temperature", "top_p", "max_output_tokens", "seed"})
+    # Provider-owned infrastructure settings: configured at construction only, never per call.
+    provider_owned_parameters = frozenset({"threads", "ctx_size", "gpu_layers"})
+    supported_inference_parameters = per_call_inference_parameters | provider_owned_parameters
 
     def __init__(
         self,
@@ -148,7 +150,7 @@ class LlamaCppCliProvider(ModelProvider):
                 duration_ms = (perf_counter() - started) * 1000
                 raise LlamaCppCliProviderError(
                     "process_start",
-                    f"could not start llama.cpp CLI process: {exc}",
+                    "could not start llama.cpp CLI process",
                     duration_ms=duration_ms,
                     inference_parameters=effective_parameters,
                 ) from exc
@@ -156,7 +158,7 @@ class LlamaCppCliProvider(ModelProvider):
                 duration_ms = (perf_counter() - started) * 1000
                 raise LlamaCppCliProviderError(
                     "provider_internal",
-                    f"provider process runner failed: {exc}",
+                    "provider process runner failed",
                     duration_ms=duration_ms,
                     inference_parameters=effective_parameters,
                 ) from exc
@@ -192,12 +194,10 @@ class LlamaCppCliProvider(ModelProvider):
         if self.timeout_s <= 0:
             raise LlamaCppCliProviderError("configuration", "timeout_s must be greater than zero")
         if not self.executable.exists() or not self.executable.is_file():
-            raise LlamaCppCliProviderError("configuration", f"llama.cpp executable does not exist: {self.executable}")
+            raise LlamaCppCliProviderError("configuration", "llama.cpp executable does not exist")
         if not self.model_path.exists() or not self.model_path.is_file():
-            raise LlamaCppCliProviderError("configuration", f"GGUF model file does not exist: {self.model_path}")
-        unsupported = sorted(set(self.default_inference_parameters) - self.supported_inference_parameters)
-        if unsupported:
-            raise LlamaCppCliProviderError("configuration", f"unsupported inference parameter(s): {', '.join(unsupported)}")
+            raise LlamaCppCliProviderError("configuration", "GGUF model file does not exist")
+        self._reject_unsupported_or_invalid(self.default_inference_parameters)
 
     def _validate_output_schema(self, output_schema: dict[str, Any]) -> None:
         if not output_schema:
@@ -206,13 +206,27 @@ class LlamaCppCliProvider(ModelProvider):
             raise LlamaCppCliProviderError("configuration", "structured output schema must be a JSON object")
 
     def _effective_inference_parameters(self, inference_parameters: dict[str, Any] | None) -> dict[str, Any]:
-        effective = dict(self.default_inference_parameters)
-        if inference_parameters:
-            effective.update(inference_parameters)
-        unsupported = sorted(set(effective) - self.supported_inference_parameters)
-        if unsupported:
-            raise LlamaCppCliProviderError("configuration", f"unsupported inference parameter(s): {', '.join(unsupported)}")
+        requested = dict(inference_parameters or {})
+        owned = sorted(set(requested) & self.provider_owned_parameters)
+        if owned:
+            raise LlamaCppCliProviderError(
+                "configuration", f"provider-owned setting(s) cannot be set per call: {safe_key_names(owned)}"
+            )
+        effective = {**self.default_inference_parameters, **requested}
+        self._reject_unsupported_or_invalid(effective)
         return json.loads(json.dumps(effective, separators=(",", ":"), sort_keys=True))
+
+    def _reject_unsupported_or_invalid(self, parameters: dict[str, Any]) -> None:
+        unsupported = set(parameters) - self.supported_inference_parameters
+        if unsupported:
+            raise LlamaCppCliProviderError(
+                "configuration", f"unsupported inference parameter(s): {safe_key_names(unsupported)}"
+            )
+        invalid = _invalid_parameter_names(parameters)
+        if invalid:
+            raise LlamaCppCliProviderError(
+                "configuration", f"invalid inference parameter value(s): {safe_key_names(invalid)}"
+            )
 
     def _argv(self, output_schema: dict[str, Any], inference_parameters: dict[str, Any], request: str) -> list[str]:
         argv = [
@@ -270,6 +284,28 @@ def _decode_llama_completion_framing(stdout: str) -> str:
     if stdout[:terminal_index].endswith(_LLAMA_COMPLETION_TERMINAL_SENTINEL):
         return stdout[: terminal_index - len(_LLAMA_COMPLETION_TERMINAL_SENTINEL)]
     return stdout
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _invalid_parameter_names(parameters: dict[str, Any]) -> list[str]:
+    """Names of parameters whose value is not a usable type or range (values are never reported)."""
+    invalid: list[str] = []
+    neutral = {key: parameters[key] for key in LlamaCppCliProvider.per_call_inference_parameters if key in parameters}
+    try:
+        InferenceParameters.model_validate(neutral)
+    except ValidationError as exc:
+        invalid.extend(str(error["loc"][0]) for error in exc.errors() if error["loc"])
+    for key in ("threads", "ctx_size"):
+        if key in parameters and not (_is_int(parameters[key]) and parameters[key] >= 1):
+            invalid.append(key)
+    if "gpu_layers" in parameters:
+        value = parameters["gpu_layers"]
+        if not ((_is_int(value) and value >= 0) or value == "all"):
+            invalid.append("gpu_layers")
+    return sorted(set(invalid))
 
 
 def _bounded_text(value: str | None, limit: int = 1000) -> str | None:

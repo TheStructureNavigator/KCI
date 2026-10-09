@@ -195,7 +195,9 @@ def test_operation_exception_preserves_failed_started_run(tmp_path) -> None:
     assert result.run.duration_ms is not None
     persisted = repo.connection.execute("SELECT status, error FROM intelligence_runs WHERE run_id = ?", (result.run.run_id,)).fetchone()
     assert persisted["status"] == "failed"
-    assert "synthetic operation failed" in persisted["error"]
+    # Foreign exception text may carry sensitive details, so only the type is persisted.
+    assert persisted["error"] == "RuntimeError: message withheld"
+    assert "synthetic operation failed" not in persisted["error"]
 
 
 def test_per_candidate_acceptance_partial_and_all_invalid(tmp_path) -> None:
@@ -272,7 +274,7 @@ def test_persistence_failure_during_valid_promotion_is_execution_failure(tmp_pat
     assert result.run.status == "failed"
     assert result.run.failure_category == "execution"
     assert result.run.rejected_count == 0
-    assert "database write failed" in result.run.error
+    assert result.run.error == "RuntimeError: message withheld"
 
 
 def test_model_run_parent_xor_and_intelligence_run_model_runs(tmp_path) -> None:

@@ -382,8 +382,9 @@ def model_run_rows(repo: KciRepository):
     ).fetchall()
 
 
-def run_op001(provider, context, repo, configuration):
-    return run_intelligence_operation(Op001ModelAssistedOperation(provider), context, repo, configuration)
+def run_op001(provider, context, repo, inference=None):
+    """Inference parameters belong to operation construction, never to per-run configuration."""
+    return run_intelligence_operation(Op001ModelAssistedOperation(provider, inference), context, repo)
 
 
 class StubTelemetryProvider(ModelProvider):
@@ -400,7 +401,7 @@ class StubTelemetryProvider(ModelProvider):
         return self.outcome
 
 
-# --- Part A / D.1, D.2: duration semantics ---------------------------------------------------
+# --- duration semantics ------------------------------------------------------------------------
 
 
 def test_successful_invocation_records_its_measured_duration_and_effective_parameters(tmp_path) -> None:
@@ -420,16 +421,14 @@ def test_successful_invocation_records_its_measured_duration_and_effective_param
 def test_pre_execution_rejection_records_null_duration_and_null_parameters(tmp_path) -> None:
     repo = make_repo(tmp_path)
     context = persist_context(repo)
-    provider = make_provider(tmp_path, ScriptedRunner())
+    rejection = LlamaCppCliProviderError("configuration", "invalid inference parameter value(s): temperature")
 
     with with_clock():  # any clock read would raise: nothing may be timed before execution
-        result = run_op001(provider, context, repo, {"temperature": 0.9, "bogus": 1})
+        result = run_op001(StubTelemetryProvider(rejection), context, repo, {"temperature": 0.9})
 
     (row,) = model_run_rows(repo)
     assert result.run.status == "failed"
-    assert "unsupported inference parameter(s): bogus" in row["error"]
     assert row["total_ms"] is None
-    # Rejected, unvalidated parameters are never recorded as parameters that were used.
     assert row["inference_parameters_json"] == "null"
 
 
@@ -493,7 +492,7 @@ def test_provider_without_telemetry_gets_null_duration_not_operation_wall_clock(
     assert failed["total_ms"] is None
 
 
-# --- Part B / D.3: requested versus effective parameters -------------------------------------
+# --- requested versus effective parameters ---------------------------------------------------
 
 
 def test_failed_invocation_records_effective_not_requested_parameters(tmp_path) -> None:
@@ -502,13 +501,13 @@ def test_failed_invocation_records_effective_not_requested_parameters(tmp_path) 
     provider = make_provider(
         tmp_path,
         ScriptedRunner(subprocess.TimeoutExpired(["llama"], 1)),
-        default_inference_parameters={"seed": 7, "top_p": 0.9},
+        default_inference_parameters={"seed": 7, "top_p": 0.9, "threads": 4},
     )
 
     run_op001(provider, context, repo, {"temperature": 0.7})
 
     (row,) = model_run_rows(repo)
-    assert json.loads(row["inference_parameters_json"]) == {"seed": 7, "temperature": 0.7, "top_p": 0.9}
+    assert json.loads(row["inference_parameters_json"]) == {"seed": 7, "temperature": 0.7, "threads": 4, "top_p": 0.9}
 
 
 def test_unresolved_parameters_are_unknown_not_empty_and_not_requested(tmp_path) -> None:
@@ -522,14 +521,14 @@ def test_unresolved_parameters_are_unknown_not_empty_and_not_requested(tmp_path)
     assert row["inference_parameters_json"] != "{}"
 
 
-def test_succeeding_provider_without_telemetry_records_the_accepted_request(tmp_path) -> None:
+def test_succeeding_provider_without_telemetry_records_unknown_parameters_not_the_request(tmp_path) -> None:
     repo = make_repo(tmp_path)
     context = persist_context(repo)
 
     run_op001(StubTelemetryProvider('{"patterns":[]}'), context, repo, {"temperature": 0.3})
 
     (row,) = model_run_rows(repo)
-    assert json.loads(row["inference_parameters_json"]) == {"temperature": 0.3}
+    assert row["inference_parameters_json"] == "null"
 
 
 def test_error_carries_effective_parameters_only_after_resolution(tmp_path) -> None:
@@ -547,7 +546,7 @@ def test_error_carries_effective_parameters_only_after_resolution(tmp_path) -> N
     assert rejected.value.duration_ms is None
 
 
-# --- Part C / D.4, D.5: attribution under interleaving, sequential regression ---------------
+# --- attribution under interleaving, sequential regression ------------------------------------
 
 
 class InterleavingProvider(LlamaCppCliProvider):

@@ -1,4 +1,4 @@
-from kci.operations.base import IntelligenceOperation
+from kci.operations.base import IntelligenceOperation, OperationConfiguration, OperationConfigurationError
 from kci.operations.uatu_op001 import (
     OP001_CATEGORY,
     OP001_OPERATION_ID,
@@ -23,6 +23,8 @@ from kci.operations.uatu_op001 import (
 
 __all__ = [
     "IntelligenceOperation",
+    "OperationConfiguration",
+    "OperationConfigurationError",
     "OP001_CATEGORY",
     "OP001_OPERATION_ID",
     "OP001_OPERATION_VERSION",

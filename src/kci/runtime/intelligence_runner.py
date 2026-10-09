@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from time import perf_counter
 from typing import Any
 
 from kci.contracts import Insight, IntelligenceContext, IntelligenceRun
-from kci.operations import IntelligenceOperation
+from kci.error_hygiene import safe_error_message, trusted_message_type
+from kci.operations import IntelligenceOperation, OperationConfigurationError
 from kci.persistence.repository import KciRepository
 from kci.runtime.insight_validation import InsightValidationFailure, promote_insight_candidate
 
@@ -19,8 +21,20 @@ class IntelligenceExecutionResult:
     validation_failures: list[tuple[int, InsightValidationFailure]]
 
 
+class PreconditionReason(Enum):
+    CONTEXT_NOT_PERSISTED = "intelligence_context_id is not persisted"
+    CONTEXT_MEMBERSHIP_MISMATCH = "persisted IntelligenceContext membership does not match supplied context"
+
+
+@trusted_message_type
 class IntelligencePreconditionFailed(ValueError):
-    pass
+    """Closed constructor: only a PreconditionReason member, never free-form text."""
+
+    def __init__(self, reason: PreconditionReason) -> None:
+        if not isinstance(reason, PreconditionReason):
+            raise TypeError("reason must be a PreconditionReason")
+        self.reason = reason
+        super().__init__(reason.value)
 
 
 def run_intelligence_operation(
@@ -29,11 +43,15 @@ def run_intelligence_operation(
     repository: KciRepository,
     requested_configuration: dict[str, Any] | None = None,
 ) -> IntelligenceExecutionResult:
+    # Contract 007.4 step 1: resolve and validate configuration before the run is established.
+    # A rejected request is never recorded: the run then carries only validated data ({}).
     effective_configuration: dict[str, Any] = {}
+    resolution_error: Exception | None = None
     try:
         effective_configuration = canonical_configuration(operation.effective_configuration(requested_configuration))
-    except Exception:
+    except Exception as exc:
         effective_configuration = {}
+        resolution_error = exc
 
     run = IntelligenceRun.started(
         operation.operation_id,
@@ -48,8 +66,8 @@ def run_intelligence_operation(
     validation_failures: list[tuple[int, InsightValidationFailure]] = []
 
     try:
-        effective_configuration = canonical_configuration(operation.effective_configuration(requested_configuration))
-        run.effective_configuration = effective_configuration
+        if resolution_error is not None:
+            raise resolution_error
         verify_intelligence_preconditions(context, repository)
         begin_intelligence_run = getattr(operation, "begin_intelligence_run", None)
         if begin_intelligence_run is not None:
@@ -73,14 +91,14 @@ def run_intelligence_operation(
                 insights.append(insight)
                 run.promoted_count += 1
         run.status = "succeeded"
-    except IntelligencePreconditionFailed as exc:
+    except (IntelligencePreconditionFailed, OperationConfigurationError) as exc:
         run.status = "requirements_failed"
         run.failure_category = "requirements"
-        run.error = str(exc)
+        run.error = safe_error_message(exc)
     except Exception as exc:
         run.status = "failed"
         run.failure_category = "execution"
-        run.error = str(exc)
+        run.error = safe_error_message(exc)
     finally:
         run.finished_at = datetime.now(timezone.utc)
         run.duration_ms = (perf_counter() - started) * 1000
@@ -92,9 +110,9 @@ def run_intelligence_operation(
 def verify_intelligence_preconditions(context: IntelligenceContext, repository: KciRepository) -> None:
     persisted_ids = repository.get_intelligence_context_finding_ids(context.intelligence_context_id)
     if not persisted_ids:
-        raise IntelligencePreconditionFailed("intelligence_context_id is not persisted")
+        raise IntelligencePreconditionFailed(PreconditionReason.CONTEXT_NOT_PERSISTED)
     if set(persisted_ids) != set(context.finding_ids):
-        raise IntelligencePreconditionFailed("persisted IntelligenceContext membership does not match supplied context")
+        raise IntelligencePreconditionFailed(PreconditionReason.CONTEXT_MEMBERSHIP_MISMATCH)
 
 
 def canonical_configuration(configuration: dict[str, Any]) -> dict[str, Any]:
