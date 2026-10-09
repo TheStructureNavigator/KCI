@@ -4,12 +4,13 @@ import hashlib
 import json
 import subprocess
 import threading
+from types import MappingProxyType
 from dataclasses import dataclass
 from pathlib import Path
 from time import perf_counter
 from typing import Any, Literal, Protocol
 
-from kci.models.base import ModelProvider
+from kci.models.base import GenerationText, InvocationTelemetry, ModelProvider
 
 
 LlamaCppFailureCategory = Literal[
@@ -30,12 +31,15 @@ class LlamaCppCliProviderError(RuntimeError):
         exit_code: int | None = None,
         duration_ms: float | None = None,
         stderr_excerpt: str | None = None,
+        inference_parameters: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.category = category
         self.exit_code = exit_code
         self.duration_ms = duration_ms
         self.stderr_excerpt = stderr_excerpt
+        # Effective parameters of the failing invocation; None if they were never resolved.
+        self.inference_parameters = inference_parameters
 
 
 @dataclass(frozen=True)
@@ -93,7 +97,7 @@ class LlamaCppCliProvider(ModelProvider):
         self._process_runner = process_runner
         self._active_lock = threading.Lock()
         self._last_invocation: LlamaCppCliInvocation | None = None
-        self.last_effective_inference_parameters: dict[str, Any] = {}
+        self.last_effective_inference_parameters: dict[str, Any] | None = None
         self._validate_static_configuration()
         self.model_artifact_hash = self._compute_sha256(self.model_path)
         self.model_name = self.model_path.name
@@ -113,6 +117,9 @@ class LlamaCppCliProvider(ModelProvider):
         if not self._active_lock.acquire(blocking=False):
             raise LlamaCppCliProviderError("provider_internal", "provider already has an active inference")
         try:
+            # Per-invocation telemetry must never be inherited from an earlier call.
+            self._last_invocation = None
+            self.last_effective_inference_parameters = None
             self._validate_output_schema(output_schema)
             effective_parameters = self._effective_inference_parameters(inference_parameters)
             self.last_effective_inference_parameters = effective_parameters
@@ -135,6 +142,7 @@ class LlamaCppCliProvider(ModelProvider):
                     "llama.cpp CLI invocation timed out",
                     duration_ms=duration_ms,
                     stderr_excerpt=_bounded_text(_to_text(exc.stderr)),
+                    inference_parameters=effective_parameters,
                 ) from exc
             except OSError as exc:
                 duration_ms = (perf_counter() - started) * 1000
@@ -142,6 +150,7 @@ class LlamaCppCliProvider(ModelProvider):
                     "process_start",
                     f"could not start llama.cpp CLI process: {exc}",
                     duration_ms=duration_ms,
+                    inference_parameters=effective_parameters,
                 ) from exc
             except Exception as exc:
                 duration_ms = (perf_counter() - started) * 1000
@@ -149,6 +158,7 @@ class LlamaCppCliProvider(ModelProvider):
                     "provider_internal",
                     f"provider process runner failed: {exc}",
                     duration_ms=duration_ms,
+                    inference_parameters=effective_parameters,
                 ) from exc
 
             duration_ms = (perf_counter() - started) * 1000
@@ -166,8 +176,15 @@ class LlamaCppCliProvider(ModelProvider):
                     exit_code=completed.returncode,
                     duration_ms=duration_ms,
                     stderr_excerpt=_bounded_text(completed.stderr),
+                    inference_parameters=effective_parameters,
                 )
-            return _decode_llama_completion_framing(completed.stdout or "")
+            return GenerationText(
+                _decode_llama_completion_framing(completed.stdout or ""),
+                InvocationTelemetry(
+                    duration_ms=duration_ms,
+                    inference_parameters=MappingProxyType(dict(effective_parameters)),
+                ),
+            )
         finally:
             self._active_lock.release()
 

@@ -103,7 +103,8 @@ class ModelRun(BaseModel):
     model: str | None = None
     model_artifact_hash: str | None = None
     quantization: str | None = None
-    inference_parameters: dict[str, Any] = Field(default_factory=dict)
+    # None means the effective parameters of the invocation are unknown (persisted as JSON null).
+    inference_parameters: dict[str, Any] | None = Field(default_factory=dict)
     prompt_version: str | None = None
     context_size: int | None = None
     input_tokens: int | None = None
